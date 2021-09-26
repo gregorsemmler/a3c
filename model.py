@@ -15,37 +15,6 @@ def get_output_shape(layer, shape):
     return before_flattening, after_flattening
 
 
-class ResidualBlock(nn.Module):
-
-    def __init__(self, in_planes, out_planes, bias=True, stride=1):
-        super().__init__()
-        self.conv1 = nn.Conv2d(in_planes, out_planes, kernel_size=3, stride=stride, padding=1, bias=bias)
-        self.bn1 = nn.BatchNorm2d(out_planes)
-        self.relu = nn.ReLU(inplace=True)
-        self.conv2 = nn.Conv2d(out_planes, out_planes, kernel_size=3, padding=1, bias=bias)
-        self.bn2 = nn.BatchNorm2d(out_planes)
-        self.down_sample = nn.Sequential(
-            nn.Conv2d(in_planes, out_planes, kernel_size=1, stride=stride, bias=bias),
-            nn.BatchNorm2d(out_planes)
-        ) if stride != 1 or in_planes != out_planes else lambda x: x
-        self.stride = stride
-
-    def forward(self, x):
-        out = self.conv1(x)
-        out = self.bn1(out)
-        out = self.relu(out)
-
-        out = self.conv2(out)
-        out = self.bn2(out)
-
-        identity = self.down_sample(x)
-
-        out += identity
-        out = self.relu(out)
-
-        return out
-
-
 class AtariModel(nn.Module):
 
     def __init__(self, input_shape, n_actions, conv_details=((16, 8, 4, 0), (32, 4, 2, 0)), fully_details=(256,)):
@@ -81,6 +50,37 @@ class AtariModel(nn.Module):
     def forward(self, x):
         conv_out = self.conv(x)
         return self.policy_head(conv_out), self.value_head(conv_out)
+
+
+class ResidualBlock(nn.Module):
+
+    def __init__(self, in_planes, out_planes, bias=True, stride=1):
+        super().__init__()
+        self.conv1 = nn.Conv2d(in_planes, out_planes, kernel_size=3, stride=stride, padding=1, bias=bias)
+        self.bn1 = nn.BatchNorm2d(out_planes)
+        self.relu = nn.ReLU(inplace=True)
+        self.conv2 = nn.Conv2d(out_planes, out_planes, kernel_size=3, padding=1, bias=bias)
+        self.bn2 = nn.BatchNorm2d(out_planes)
+        self.down_sample = nn.Sequential(
+            nn.Conv2d(in_planes, out_planes, kernel_size=1, stride=stride, bias=bias),
+            nn.BatchNorm2d(out_planes)
+        ) if stride != 1 or in_planes != out_planes else lambda x: x
+        self.stride = stride
+
+    def forward(self, x):
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = self.relu(out)
+
+        out = self.conv2(out)
+        out = self.bn2(out)
+
+        identity = self.down_sample(x)
+
+        out += identity
+        out = self.relu(out)
+
+        return out
 
 
 class ResidualModel(nn.Module):
