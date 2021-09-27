@@ -1,96 +1,14 @@
 import logging
-import pickle
-from collections import deque
-from copy import deepcopy
-from datetime import datetime
-from os import makedirs
 from os.path import join
-from timeit import default_timer as timer
-from typing import Sequence
 
 import gym
-from gym import envs, Env
+from gym import envs
 import numpy as np
-import torch
-import torch.nn.functional as F
-from torch.optim import SGD
-from torch.optim.lr_scheduler import MultiStepLR
 from torch.utils.tensorboard import SummaryWriter
 
+from data import EpisodeResult
 
 logger = logging.getLogger(__name__)
-
-
-class EpisodeResult(object):
-
-    def __init__(self, env, start_state):
-        self.env = env
-        self.states = [start_state]
-        self.actions = []
-        self.rewards = []
-
-    def append(self, action, reward, state):
-        self.states.append(state)
-        self.actions.append(action)
-        self.rewards.append(reward)
-
-    def calculate_return(self, gamma):
-        total_return = 0.0
-        for k in range(len(self.rewards)):
-            total_return += gamma ** k * self.rewards[k]
-        return total_return
-
-
-class EnvironmentsDataset(object):
-
-    def __init__(self, envs: Sequence[Env], model):
-        self.envs = envs
-        self.model = model
-        self.initialized = False
-
-    def data(self):
-        if not self.initialized:
-            states = self.reset()
-
-        # actions, vals = self.net(states)
-        pass
-
-    def reset(self):
-        return [e.reset() for e in self.envs]
-
-
-class Environments(Env):
-
-    def __init__(self, envs: Sequence[Env], action_space, observation_space):
-        self.envs = envs
-        self.action_space = action_space
-        self.observation_space = observation_space
-
-    def step(self, actions):
-        new_states = []
-        rewards = []
-        dones = []
-        infos = []
-
-        for env, action in zip(self.envs, actions):
-            new_state, reward, done, info = env.step(action)
-            new_states.append(new_state)
-            rewards.append(reward)
-            dones.append(done)
-            infos.append(info)
-
-        return new_states, rewards, dones, infos
-
-    def reset(self):
-        return [e.reset() for e in self.envs]
-
-    def render(self, mode="human"):
-        # TODO display complete image instead / human render mode?
-        return [e.render(mode="rgb_array") for e in self.envs]
-
-    def close(self):
-        for env in self.envs:
-            env.close()
 
 
 def env_test():

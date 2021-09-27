@@ -1,4 +1,4 @@
-# Source: https://github.com/openai/baselines/blob/master/baselines/common/atari_wrappers.py
+# Based on: https://github.com/openai/baselines/blob/master/baselines/common/atari_wrappers.py
 
 from collections import deque
 
@@ -288,7 +288,7 @@ def make_atari(env_id, max_episode_steps=None):
     return env
 
 
-def wrap_deepmind(env, episode_life=True, clip_rewards=True, frame_stack=False, scale=False):
+def wrap_deepmind(env, episode_life=True, clip_rewards=True, frame_stack_count=4, scale=False):
     """Configure environment for DeepMind-style Atari.
     """
     if episode_life:
@@ -300,6 +300,6 @@ def wrap_deepmind(env, episode_life=True, clip_rewards=True, frame_stack=False, 
         env = ScaledFloatFrame(env)
     if clip_rewards:
         env = ClipRewardEnv(env)
-    if frame_stack:
-        env = FrameStack(env, 4)
+    if frame_stack_count > 0:
+        env = FrameStack(env, frame_stack_count)
     return env
