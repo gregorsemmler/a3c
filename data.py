@@ -44,6 +44,15 @@ class EpisodeResult(object):
         return len(self.states)
 
 
+class ActorCriticSample(object):
+
+    def __init__(self, state, action, value, advantage):
+        self.state = state
+        self.action = action
+        self.value = value
+        self.advantage = advantage
+
+
 class EnvironmentsDataset(object):
 
     def __init__(self, envs: Sequence[Env], model: ActorCriticModel, n_steps, gamma, batch_size, preprocessor, device,
@@ -91,9 +100,11 @@ class EnvironmentsDataset(object):
 
             if len(long_enoughs) > 0:
                 last_states_vals = [float(vals_out[idx]) for idx in long_enoughs]
-                reward_lists = [episode_results[idx].rewards[-self.n_steps:] for idx in long_enoughs]
+                batch_episode_results = [episode_results[idx] for idx in long_enoughs]
+                reward_lists = [e.rewards[-self.n_steps:] for e in batch_episode_results]
+                actions = [e.actions[-self.n_steps] for e in batch_episode_results]
+                cur_states = [e.states[-self.n_steps] for e in batch_episode_results]
                 n_step_returns = [self.n_step_return(r_l, l_s_v) for r_l, l_s_v in zip(reward_lists, last_states_vals)]
-                cur_states = [episode_results[idx].states[-self.n_steps] for idx in long_enoughs]
 
                 with torch.no_grad():
                     cur_in_ts = torch.cat([self.prepocessor.preprocess(s) for s in cur_states]).to(self.device)
@@ -101,9 +112,17 @@ class EnvironmentsDataset(object):
 
                 advantages = [n_r - float(c_v) for n_r, c_v in zip(n_step_returns, cur_vals_out)]
 
+                for st, act, val, adv in zip(cur_states, actions, cur_vals_out, advantages):
+                    batch.append(ActorCriticSample(st, act, float(val), float(adv)))
+
+                if len(batch) >= self.batch_size:
+                    yield batch
+                    batch = []
+
                 print("")
 
             if len(dones_ids) > 0:
+                # TODO
                 print("")
                 pass
 
