@@ -95,12 +95,14 @@ class EnvironmentsDataset(object):
             for er, a, (s, r, d, i) in zip(episode_results, actions, stepped):
                 er.append(int(a), r, s, i)
 
-            long_enoughs = [idx for idx in range(len(episode_results)) if len(episode_results[idx]) > self.n_steps]
-            dones_ids = [idx for idx in range(len(dones)) if dones[idx]]
+            to_train_ids = [idx for idx in range(len(episode_results)) if len(episode_results[idx]) > self.n_steps]
+            not_long_enough_done_ids = {idx for idx in range(len(dones)) if
+                                        dones[idx] and len(episode_results[idx]) <= self.n_steps}
+            done_ids = {idx for idx in range(len(dones)) if dones[idx]}
 
-            if len(long_enoughs) > 0:
-                last_states_vals = [float(vals_out[idx]) for idx in long_enoughs]
-                batch_episode_results = [episode_results[idx] for idx in long_enoughs]
+            if len(to_train_ids) > 0:
+                last_states_vals = [float(vals_out[idx]) for idx in to_train_ids]
+                batch_episode_results = [episode_results[idx] for idx in to_train_ids]
                 reward_lists = [e.rewards[-self.n_steps:] for e in batch_episode_results]
                 actions = [e.actions[-self.n_steps] for e in batch_episode_results]
                 cur_states = [e.states[-self.n_steps] for e in batch_episode_results]
@@ -121,7 +123,7 @@ class EnvironmentsDataset(object):
 
                 print("")
 
-            if len(dones_ids) > 0:
+            if len(not_long_enough_done_ids) > 0:
                 # TODO
                 print("")
                 pass
