@@ -87,7 +87,7 @@ class EnvironmentsDataset(object):
 
     def __init__(self, envs: Sequence[Env], model: ActorCriticModel, n_steps, gamma, batch_size, preprocessor, device,
                  action_selector=None):
-        self.envs = envs
+        self.envs = {str(uuid.uuid4()): e for e in envs}
         self.model = model
         self.num_actions = model.num_actions
         if n_steps < 1:
@@ -118,8 +118,8 @@ class EnvironmentsDataset(object):
             actions = self.action_selector(probs_out)
             self.step(actions)
 
-            to_train_ers = {k: er for k, er in self.episode_results.items() if len(er) > self.n_steps}
-            not_long_enough_done_ids = {k for k, er in self.episode_results.items() if len(er) <= self.n_steps and er.done}
+            to_train_ers = {k: er for k, er in self.episode_results.items() if
+                            (len(er) > self.n_steps) or len(er) <= self.n_steps and er.done}
             done_ids = {k for k, er in self.episode_results.items() if er.done}
 
             if len(to_train_ers) > 0:
@@ -143,20 +143,20 @@ class EnvironmentsDataset(object):
                     yield batch
                     batch = []
 
-                print("")
+            if len (done_ids) > 0:
 
-            if len(not_long_enough_done_ids) > 0:
+                for k in done_ids:
+                    env = self.envs[k]
+                    self.episode_results[k] = EpisodeResult(str(uuid.uuid4()), env, env.reset())
+
                 print("")
-                pass
 
             print("")
 
         pass
 
     def reset(self):
-        states = [e.reset() for e in self.envs]
-        self.episode_results = {k: EpisodeResult(k, e, s) for k, e, s in
-                                zip([str(uuid.uuid4()) for _ in range(len(states))], self.envs, states)}
+        self.episode_results = {k: EpisodeResult(str(uuid.uuid4()), e, e.reset()) for k, e in self.envs.items()}
 
     def step(self, actions):
         for (k, er), a in zip(sorted(self.episode_results.items()), actions):
