@@ -1,4 +1,5 @@
 import logging
+import uuid
 from os.path import join
 
 import gym
@@ -35,13 +36,13 @@ def actor_critic(env, policy, v, num_iterations=10000, batch_size=32, gamma=0.99
     while i < num_iterations:
         state = env.reset()
         done = False
-        episode_result = EpisodeResult(env, state)
+        episode_result = EpisodeResult(str(uuid.uuid4()), env, state)
 
         discount_factor = 1.0
         while not done:
             action = policy(state)
-            new_state, reward, done, _ = env.step(action)
-            episode_result.append(action, reward, state)
+            new_state, reward, done, info = env.step(action)
+            episode_result.append(action, reward, state, done)
 
             v_state, v_new_state = v(state), v(new_state)
             if done:

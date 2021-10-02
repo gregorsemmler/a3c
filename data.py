@@ -1,4 +1,5 @@
 import logging
+import uuid
 from typing import Sequence
 
 import numpy as np
@@ -18,17 +19,22 @@ def default_action_selector(probs):
 
 class EpisodeResult(object):
 
-    def __init__(self, env, start_state):
+    def __init__(self, episode_id, env, start_state):
+        self.episode_id = episode_id
         self.env = env
         self.states = [start_state]
         self.actions = []
         self.rewards = []
         self.infos = []
+        self.done = False
 
-    def append(self, action, reward, state, info=None):
-        self.states.append(state)
+    def append(self, action, reward, state, done, info=None):
+        if self.done:
+            raise ValueError("Can't append to done EpisodeResult.")
         self.actions.append(action)
+        self.states.append(state)
         self.rewards.append(reward)
+        self.done = done
         self.infos.append(info)
 
     def calculate_return(self, gamma):
@@ -36,6 +42,30 @@ class EpisodeResult(object):
         for k in range(len(self.rewards)):
             total_return += gamma ** k * self.rewards[k]
         return total_return
+
+    def n_step_return(self, n, gamma, last_state_value):
+        cur_state, action, rewards = self.n_step_stats(n)
+        result = 0.0 if n >= len(self.states) and self.done else last_state_value
+        for r in reversed(rewards):
+            result = r + gamma * result
+        return result
+
+    def n_step_stats(self, n):
+        n_step_idx = -min(n, len(self.states))
+        cur_state = self.states[n_step_idx]
+        rewards = self.rewards[n_step_idx:]
+        action = self.actions[n_step_idx]
+        return cur_state, action, rewards
+
+    def cur_state(self, n):
+        return self.states[-min(n, len(self.states))]
+
+    def cur_action(self, n):
+        return self.actions[-min(n, len(self.states))]
+
+    @property
+    def last_state(self):
+        return self.states[-1]
 
     def __str__(self):
         return f"{self.actions} - {self.rewards}"
@@ -68,54 +98,46 @@ class EnvironmentsDataset(object):
         self.prepocessor = preprocessor
         self.device = device
         self.action_selector = default_action_selector if action_selector is None else action_selector
-
-    def n_step_return(self, rewards, last_state_val):
-        result = last_state_val
-        for r in reversed(rewards):
-            result = r + self.gamma * result
-        return result
+        self.episode_results = {}
 
     def data(self):
         batch = []
-        states = self.reset()
-        episode_results = [EpisodeResult(e, s) for e, s in zip(self.envs, states)]
+        self.reset()
 
         while True:
-            in_ts = torch.cat([self.prepocessor.preprocess(s) for s in states]).to(self.device)
+            sorted_ers = sorted(self.episode_results.items())
+            k_to_idx = {k: idx for idx, (k, v) in enumerate(sorted_ers)}
+            idx_to_k = {v: k for k, v in k_to_idx.items()}
 
-            self.model.eval()
+            in_ts = torch.cat([self.prepocessor.preprocess(er.last_state) for k, er in sorted_ers]).to(self.device)
+
             with torch.no_grad():
                 log_probs_out, vals_out = self.model(in_ts)
                 probs_out = F.softmax(log_probs_out, dim=1)
 
             actions = self.action_selector(probs_out)
-            stepped = self.step(actions)
-            new_states, rewards, dones, infos = list(zip(*stepped))
+            self.step(actions)
 
-            for er, a, (s, r, d, i) in zip(episode_results, actions, stepped):
-                er.append(int(a), r, s, i)
+            to_train_ers = {k: er for k, er in self.episode_results.items() if len(er) > self.n_steps}
+            not_long_enough_done_ids = {k for k, er in self.episode_results.items() if len(er) <= self.n_steps and er.done}
+            done_ids = {k for k, er in self.episode_results.items() if er.done}
 
-            to_train_ids = [idx for idx in range(len(episode_results)) if len(episode_results[idx]) > self.n_steps]
-            not_long_enough_done_ids = {idx for idx in range(len(dones)) if
-                                        dones[idx] and len(episode_results[idx]) <= self.n_steps}
-            done_ids = {idx for idx in range(len(dones)) if dones[idx]}
-
-            if len(to_train_ids) > 0:
-                last_states_vals = [float(vals_out[idx]) for idx in to_train_ids]
-                batch_episode_results = [episode_results[idx] for idx in to_train_ids]
-                reward_lists = [e.rewards[-self.n_steps:] for e in batch_episode_results]
-                actions = [e.actions[-self.n_steps] for e in batch_episode_results]
-                cur_states = [e.states[-self.n_steps] for e in batch_episode_results]
-                n_step_returns = [self.n_step_return(r_l, l_s_v) for r_l, l_s_v in zip(reward_lists, last_states_vals)]
+            if len(to_train_ers) > 0:
+                last_states_vals = [float(vals_out[k_to_idx[k]]) for k in to_train_ers.keys()]
+                batch_ers = [er for k, er in to_train_ers.items()]
+                n_step_returns = [er.n_step_return(self.n_steps, self.gamma, l_v) for er, l_v in
+                                  zip(batch_ers, last_states_vals)]
 
                 with torch.no_grad():
-                    cur_in_ts = torch.cat([self.prepocessor.preprocess(s) for s in cur_states]).to(self.device)
+                    cur_in_ts = torch.cat(
+                        [self.prepocessor.preprocess(er.cur_state(self.n_steps)) for k, er in sorted_ers]).to(
+                        self.device)
                     _, cur_vals_out = self.model(cur_in_ts)
 
                 advantages = [n_r - float(c_v) for n_r, c_v in zip(n_step_returns, cur_vals_out)]
 
-                for st, act, val, adv in zip(cur_states, actions, cur_vals_out, advantages):
-                    batch.append(ActorCriticSample(st, act, float(val), float(adv)))
+                for er, val, adv in zip(batch_ers, cur_vals_out, advantages):
+                    batch.append(ActorCriticSample(er.cur_state(self.n_steps), er.cur_action(self.n_steps), float(val), float(adv)))
 
                 if len(batch) >= self.batch_size:
                     yield batch
@@ -124,23 +146,22 @@ class EnvironmentsDataset(object):
                 print("")
 
             if len(not_long_enough_done_ids) > 0:
-                # TODO
                 print("")
                 pass
 
             print("")
 
-        # TODO
-        # actions, vals = self.net(states)
-
-        print("")
         pass
 
     def reset(self):
-        return [e.reset() for e in self.envs]
+        states = [e.reset() for e in self.envs]
+        self.episode_results = {k: EpisodeResult(k, e, s) for k, e, s in
+                                zip([str(uuid.uuid4()) for _ in range(len(states))], self.envs, states)}
 
     def step(self, actions):
-        return [e.step(a) for e, a in zip(self.envs, actions)]
+        for (k, er), a in zip(sorted(self.episode_results.items()), actions):
+            s, r, d, i = er.env.step(a)
+            er.append(int(a), r, s, d, i)
 
 
 class Environments(Env):
