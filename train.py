@@ -36,7 +36,7 @@ def actor_critic(env, policy, v, num_iterations=10000, batch_size=32, gamma=0.99
     while i < num_iterations:
         state = env.reset()
         done = False
-        episode_result = EpisodeResult(str(uuid.uuid4()), env, state)
+        episode_result = EpisodeResult(env, state)
 
         discount_factor = 1.0
         while not done:

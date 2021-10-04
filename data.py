@@ -19,18 +19,26 @@ def default_action_selector(probs):
 
 class EpisodeResult(object):
 
-    def __init__(self, episode_id, env, start_state):
-        self.episode_id = episode_id
+    def __init__(self, env, start_state, episode_id=None, chain=True):
         self.env = env
         self.states = [start_state]
         self.actions = []
         self.rewards = []
         self.infos = []
         self.done = False
+        self.chain = chain
+        self.episode_id = episode_id if episode_id is not None else str(uuid.uuid4())
+        self.next_episode_result = None
+
+    def begin_new_episode(self, episode_id=None, chain=True):
+        self.next_episode_result = EpisodeResult(self.env, self.env.reset(), episode_id=episode_id, chain=chain)
 
     def append(self, action, reward, state, done, info=None):
         if self.done:
-            raise ValueError("Can't append to done EpisodeResult.")
+            if not self.chain:
+                raise ValueError("Can't append to done EpisodeResult.")
+            else:
+                self.next_episode_result.append(action, reward, state, done, info)
         self.actions.append(action)
         self.states.append(state)
         self.rewards.append(reward)
@@ -87,7 +95,7 @@ class EnvironmentsDataset(object):
 
     def __init__(self, envs: Sequence[Env], model: ActorCriticModel, n_steps, gamma, batch_size, preprocessor, device,
                  action_selector=None):
-        self.envs = {str(uuid.uuid4()): e for e in envs}
+        self.envs = {idx: e for idx, e in enumerate(envs)}
         self.model = model
         self.num_actions = model.num_actions
         if n_steps < 1:
@@ -147,7 +155,7 @@ class EnvironmentsDataset(object):
 
                 for k in done_ids:
                     env = self.envs[k]
-                    self.episode_results[k] = EpisodeResult(str(uuid.uuid4()), env, env.reset())
+                    self.episode_results[k] = EpisodeResult(env, env.reset())
 
                 print("")
 
@@ -156,7 +164,7 @@ class EnvironmentsDataset(object):
         pass
 
     def reset(self):
-        self.episode_results = {k: EpisodeResult(str(uuid.uuid4()), e, e.reset()) for k, e in self.envs.items()}
+        self.episode_results = {k: EpisodeResult(e, e.reset()) for k, e in self.envs.items()}
 
     def step(self, actions):
         for (k, er), a in zip(sorted(self.episode_results.items()), actions):
