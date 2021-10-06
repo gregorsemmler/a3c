@@ -26,12 +26,25 @@ class EpisodeResult(object):
         self.rewards = []
         self.infos = []
         self.done = False
-        self.chain = chain
         self.episode_id = episode_id if episode_id is not None else str(uuid.uuid4())
+        self.chain = chain
+        self.get_offset = 0
         self.next_episode_result = None
 
     def begin_new_episode(self, episode_id=None, chain=True):
         self.next_episode_result = EpisodeResult(self.env, self.env.reset(), episode_id=episode_id, chain=chain)
+
+    def set_to_next_episode_result(self):
+        self.env = self.next_episode_result.env
+        self.states = self.next_episode_result.states
+        self.actions = self.next_episode_result.actions
+        self.rewards = self.next_episode_result.rewards
+        self.infos = self.next_episode_result.infos
+        self.done = self.next_episode_result.done
+        self.episode_id = self.next_episode_result.episode_id
+        self.chain = self.next_episode_result.chain
+        self.get_offset = self.next_episode_result.get_offset
+        self.next_episode_result = self.next_episode_result.next_episode_result
 
     def append(self, action, reward, state, done, info=None):
         if self.done:
@@ -39,11 +52,15 @@ class EpisodeResult(object):
                 raise ValueError("Can't append to done EpisodeResult.")
             else:
                 self.next_episode_result.append(action, reward, state, done, info)
-        self.actions.append(action)
-        self.states.append(state)
-        self.rewards.append(reward)
-        self.done = done
-        self.infos.append(info)
+        else:
+            self.actions.append(action)
+            self.states.append(state)
+            self.rewards.append(reward)
+            self.done = done
+            self.infos.append(info)
+
+            if done and self.chain:
+                self.begin_new_episode()
 
     def calculate_return(self, gamma):
         total_return = 0.0
@@ -58,18 +75,35 @@ class EpisodeResult(object):
             result = r + gamma * result
         return result
 
+    def n_step_idx(self, n):
+        if self.chain and self.done:
+            idx = n - self.get_offset
+        else:
+            idx = n
+        return -min(idx, len(self.states))
+
     def n_step_stats(self, n):
-        n_step_idx = -min(n, len(self.states))
+        n_step_idx = self.n_step_idx(n)
         cur_state = self.states[n_step_idx]
         rewards = self.rewards[n_step_idx:]
         action = self.actions[n_step_idx]
         return cur_state, action, rewards
 
     def cur_state(self, n):
-        return self.states[-min(n, len(self.states))]
+        return self.states[self.n_step_idx(n)]
 
     def cur_action(self, n):
-        return self.actions[-min(n, len(self.states))]
+        return self.actions[self.n_step_idx(n)]
+
+    def update_offset(self, n):
+        if not self.done:
+            return
+
+        self.get_offset += 1
+        if self.get_offset >= n:
+            print(self)
+            self.set_to_next_episode_result()
+            print(self)
 
     @property
     def last_state(self):
@@ -204,3 +238,65 @@ class Environments(Env):
     def close(self):
         for env in self.envs:
             env.close()
+
+
+def episode_result_experiment():
+    class DummyEnv(object):
+
+        def __init__(self):
+            self.counter = 0
+
+        def reset(self):
+            return np.random.randint(5)
+
+        def step(self, action):
+            done = self.counter >= 10
+            if done:
+                self.counter = 0
+            else:
+                self.counter += 1
+            return np.random.randint(5), np.random.randint(5), done, {}
+
+    env = DummyEnv()
+    start_state = env.reset()
+
+    er = EpisodeResult(DummyEnv(), start_state)
+    n = 4
+
+    print("")
+
+    while not er.done:
+        action = np.random.randint(5)
+        new_state, reward, done, info = env.step(action)
+
+        er.append(action, reward, new_state, done, info)
+
+        print("")
+        pass
+
+    for _ in range(5):
+        action = np.random.randint(5)
+        new_state, reward, done, info = env.step(action)
+
+        er.append(action, reward, new_state, done, info)
+        print(er.next_episode_result)
+
+        print("")
+        pass
+
+    print("")
+    stat_history = []
+
+    for _ in range(10):
+        stats = er.n_step_stats(n)
+        er.update_offset(n)
+        stat_history.append(stats)
+
+        print("")
+    print("")
+
+    pass
+
+
+if __name__ == "__main__":
+    episode_result_experiment()
