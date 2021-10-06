@@ -124,6 +124,9 @@ class ActorCriticSample(object):
         self.value = value
         self.advantage = advantage
 
+    def __str__(self):
+        return f"{self.state} - {self.action} - {self.value} - {self.advantage}"
+
 
 class EnvironmentsDataset(object):
 
@@ -149,7 +152,6 @@ class EnvironmentsDataset(object):
         while True:
             sorted_ers = sorted(self.episode_results.items())
             k_to_idx = {k: idx for idx, (k, v) in enumerate(sorted_ers)}
-            idx_to_k = {v: k for k, v in k_to_idx.items()}
 
             in_ts = torch.cat([self.prepocessor.preprocess(er.last_state) for k, er in sorted_ers]).to(self.device)
 
@@ -162,7 +164,6 @@ class EnvironmentsDataset(object):
 
             to_train_ers = {k: er for k, er in self.episode_results.items() if
                             (len(er) > self.n_steps) or len(er) <= self.n_steps and er.done}
-            done_ids = {k for k, er in self.episode_results.items() if er.done}
 
             if len(to_train_ers) > 0:
                 last_states_vals = [float(vals_out[k_to_idx[k]]) for k in to_train_ers.keys()]
@@ -179,23 +180,15 @@ class EnvironmentsDataset(object):
                 advantages = [n_r - float(c_v) for n_r, c_v in zip(n_step_returns, cur_vals_out)]
 
                 for er, val, adv in zip(batch_ers, cur_vals_out, advantages):
-                    batch.append(ActorCriticSample(er.cur_state(self.n_steps), er.cur_action(self.n_steps), float(val), float(adv)))
+                    batch.append(ActorCriticSample(er.cur_state(self.n_steps), er.cur_action(self.n_steps), float(val),
+                                                   float(adv)))
+
+                for er in batch_ers:
+                    er.update_offset(self.n_steps)
 
                 if len(batch) >= self.batch_size:
                     yield batch
                     batch = []
-
-            if len (done_ids) > 0:
-
-                for k in done_ids:
-                    env = self.envs[k]
-                    self.episode_results[k] = EpisodeResult(env, env.reset())
-
-                print("")
-
-            print("")
-
-        pass
 
     def reset(self):
         self.episode_results = {k: EpisodeResult(e, e.reset()) for k, e in self.envs.items()}

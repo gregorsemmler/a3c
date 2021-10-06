@@ -1,3 +1,5 @@
+from collections import deque
+
 import gym
 import torch
 import torch.nn.functional as F
@@ -11,10 +13,12 @@ from model import SimplePreProcessor, AtariModel
 
 def main():
     env_name = "PongNoFrameskip-v4"
-    env_count = 16
+    env_count = 1
+    # env_count = 16
     n_steps = 10
     gamma = 0.99
-    batch_size = 128
+    batch_size = 10
+    # batch_size = 128
 
     env_names = sorted(envs.registry.env_specs.keys())
 
@@ -49,8 +53,12 @@ def main():
 
     dataset = EnvironmentsDataset(environments, model, n_steps, gamma, batch_size, preprocessor, device)
 
+    batches = deque(maxlen=30)
     for xxx in dataset.data():
+        batches.append(xxx)
         print("")
+
+    print("")
 
     # while True:
     #     cv.imshow("state", state.squeeze())
