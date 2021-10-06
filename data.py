@@ -2,7 +2,6 @@ import logging
 import uuid
 from typing import Sequence
 
-import numpy as np
 import torch
 import torch.nn.functional as F
 from gym import Env
@@ -197,99 +196,3 @@ class EnvironmentsDataset(object):
         for (k, er), a in zip(sorted(self.episode_results.items()), actions):
             s, r, d, i = er.env.step(a)
             er.append(int(a), r, s, d, i)
-
-
-class Environments(Env):
-
-    def __init__(self, envs: Sequence[Env], action_space, observation_space):
-        self.envs = envs
-        self.action_space = action_space
-        self.observation_space = observation_space
-
-    def step(self, actions):
-        new_states = []
-        rewards = []
-        dones = []
-        infos = []
-
-        for env, action in zip(self.envs, actions):
-            new_state, reward, done, info = env.step(action)
-            new_states.append(new_state)
-            rewards.append(reward)
-            dones.append(done)
-            infos.append(info)
-
-        return new_states, rewards, dones, infos
-
-    def reset(self):
-        return [e.reset() for e in self.envs]
-
-    def render(self, mode="human"):
-        # TODO display complete image instead / human render mode?
-        return [e.render(mode="rgb_array") for e in self.envs]
-
-    def close(self):
-        for env in self.envs:
-            env.close()
-
-
-def episode_result_experiment():
-    class DummyEnv(object):
-
-        def __init__(self):
-            self.counter = 0
-
-        def reset(self):
-            return np.random.randint(5)
-
-        def step(self, action):
-            done = self.counter >= 10
-            if done:
-                self.counter = 0
-            else:
-                self.counter += 1
-            return np.random.randint(5), np.random.randint(5), done, {}
-
-    env = DummyEnv()
-    start_state = env.reset()
-
-    er = EpisodeResult(DummyEnv(), start_state)
-    n = 4
-
-    print("")
-
-    while not er.done:
-        action = np.random.randint(5)
-        new_state, reward, done, info = env.step(action)
-
-        er.append(action, reward, new_state, done, info)
-
-        print("")
-        pass
-
-    for _ in range(5):
-        action = np.random.randint(5)
-        new_state, reward, done, info = env.step(action)
-
-        er.append(action, reward, new_state, done, info)
-        print(er.next_episode_result)
-
-        print("")
-        pass
-
-    print("")
-    stat_history = []
-
-    for _ in range(10):
-        stats = er.n_step_stats(n)
-        er.update_offset(n)
-        stat_history.append(stats)
-
-        print("")
-    print("")
-
-    pass
-
-
-if __name__ == "__main__":
-    episode_result_experiment()
