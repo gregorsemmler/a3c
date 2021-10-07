@@ -1,10 +1,8 @@
 from collections import deque
 
-import gym
 import torch
 import torch.nn.functional as F
 from gym import envs
-import cv2 as cv
 
 from atari_wrappers import wrap_deepmind, make_atari
 from data import EnvironmentsDataset
@@ -21,13 +19,6 @@ def main():
     # batch_size = 128
 
     env_names = sorted(envs.registry.env_specs.keys())
-
-    # env1 = gym.make(env_name)
-    # state1 = env1.reset()
-    #
-    # env2 = wrap_deepmind(gym.make(env_name))
-    # state2 = env2.reset()
-
     env = wrap_deepmind(make_atari(env_name))
     state = env.reset()
 
@@ -57,24 +48,6 @@ def main():
     for xxx in dataset.data():
         batches.append(xxx)
         print("")
-
-    print("")
-
-    # while True:
-    #     cv.imshow("state", state.squeeze())
-    #     cv.waitKey()
-    #     cv.destroyAllWindows()
-    #
-    #     action = env.action_space.sample()
-    #     state, reward, done, _ = env.step(action)
-    #     print(f"Action {action}, Reward {reward}")
-    #
-    #     if done:
-    #         print("Done")
-    #         state = env.reset()
-    #     pass
-
-    pass
 
 
 if __name__ == "__main__":

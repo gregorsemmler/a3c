@@ -30,21 +30,6 @@ class EpisodeResult(object):
         self.get_offset = 0
         self.next_episode_result = None
 
-    def begin_new_episode(self, episode_id=None, chain=True):
-        self.next_episode_result = EpisodeResult(self.env, self.env.reset(), episode_id=episode_id, chain=chain)
-
-    def set_to_next_episode_result(self):
-        self.env = self.next_episode_result.env
-        self.states = self.next_episode_result.states
-        self.actions = self.next_episode_result.actions
-        self.rewards = self.next_episode_result.rewards
-        self.infos = self.next_episode_result.infos
-        self.done = self.next_episode_result.done
-        self.episode_id = self.next_episode_result.episode_id
-        self.chain = self.next_episode_result.chain
-        self.get_offset = self.next_episode_result.get_offset
-        self.next_episode_result = self.next_episode_result.next_episode_result
-
     def append(self, action, reward, state, done, info=None):
         if self.done:
             if not self.chain:
@@ -100,9 +85,22 @@ class EpisodeResult(object):
 
         self.get_offset += 1
         if self.get_offset >= n:
-            print(self)
             self.set_to_next_episode_result()
-            print(self)
+
+    def begin_new_episode(self, episode_id=None, chain=True):
+        self.next_episode_result = EpisodeResult(self.env, self.env.reset(), episode_id=episode_id, chain=chain)
+
+    def set_to_next_episode_result(self):
+        self.env = self.next_episode_result.env
+        self.states = self.next_episode_result.states
+        self.actions = self.next_episode_result.actions
+        self.rewards = self.next_episode_result.rewards
+        self.infos = self.next_episode_result.infos
+        self.done = self.next_episode_result.done
+        self.episode_id = self.next_episode_result.episode_id
+        self.chain = self.next_episode_result.chain
+        self.get_offset = self.next_episode_result.get_offset
+        self.next_episode_result = self.next_episode_result.next_episode_result
 
     @property
     def last_state(self):
@@ -115,16 +113,22 @@ class EpisodeResult(object):
         return len(self.states)
 
 
-class ActorCriticSample(object):
+class ActorCriticBatch(object):
 
-    def __init__(self, state, action, value, advantage):
-        self.state = state
-        self.action = action
-        self.value = value
-        self.advantage = advantage
+    def __init__(self):
+        self.states = []
+        self.actions = []
+        self.values = []
+        self.advantages = []
 
-    def __str__(self):
-        return f"{self.state} - {self.action} - {self.value} - {self.advantage}"
+    def append(self, state, action, value, advantage):
+        self.states.append(state)
+        self.actions.append(action)
+        self.values.append(value)
+        self.advantages.append(advantage)
+
+    def __len__(self):
+        return len(self.states)
 
 
 class EnvironmentsDataset(object):
@@ -145,7 +149,7 @@ class EnvironmentsDataset(object):
         self.episode_results = {}
 
     def data(self):
-        batch = []
+        batch = ActorCriticBatch()
         self.reset()
 
         while True:
@@ -178,16 +182,16 @@ class EnvironmentsDataset(object):
 
                 advantages = [n_r - float(c_v) for n_r, c_v in zip(n_step_returns, cur_vals_out)]
 
-                for er, val, adv in zip(batch_ers, cur_vals_out, advantages):
-                    batch.append(ActorCriticSample(er.cur_state(self.n_steps), er.cur_action(self.n_steps), float(val),
-                                                   float(adv)))
+                for er, val, adv in zip(batch_ers, n_step_returns, advantages):
+                    batch.append(self.prepocessor.preprocess(er.cur_state(self.n_steps)), er.cur_action(self.n_steps),
+                                 float(val), float(adv))
 
                 for er in batch_ers:
                     er.update_offset(self.n_steps)
 
                 if len(batch) >= self.batch_size:
                     yield batch
-                    batch = []
+                    batch = ActorCriticBatch()
 
     def reset(self):
         self.episode_results = {k: EpisodeResult(e, e.reset()) for k, e in self.envs.items()}
