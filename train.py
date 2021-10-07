@@ -102,6 +102,7 @@ def main():
     n_steps = 10
     gamma = 0.99
     batch_size = 128
+    entropy_beta = 0.01
 
     checkpoint_path = "model_checkpoints"
     best_models_path = join(checkpoint_path, "best")
@@ -151,6 +152,13 @@ def main():
         probs_out = F.softmax(log_probs_out, dim=1)
 
         value_loss = F.mse_loss(value_out.squeeze(), values_t)
+        policy_loss = advantages_t * log_probs_out[range(len(probs_out)), actions]
+        policy_loss = -policy_loss.mean()
+
+        entropy_loss = entropy_beta * (probs_out * log_probs_out).sum(dim=1).mean()
+
+        loss = entropy_loss + value_loss + policy_loss
+        loss.backward()
 
         batches.append(batch)
         print("")
