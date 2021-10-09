@@ -7,9 +7,11 @@ from os.path import join
 
 import gym
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 from gym import envs
 import numpy as np
+from torch.optim import Adam
 from torch.utils.tensorboard import SummaryWriter
 
 from atari_wrappers import make_atari, wrap_deepmind
@@ -102,7 +104,14 @@ def main():
     n_steps = 10
     gamma = 0.99
     batch_size = 128
-    entropy_beta = 0.01
+
+    value_factor = 1.0
+    policy_factor = 1.0
+    entropy_factor = 0.01
+
+    max_norm = 0.5
+
+    lr = 1e-4
 
     checkpoint_path = "model_checkpoints"
     best_models_path = join(checkpoint_path, "best")
@@ -119,29 +128,20 @@ def main():
     state = env.reset()
 
     preprocessor = SimplePreProcessor()
-    # in_t = preprocessor.preprocess(state)
-    in_t = torch.cat([preprocessor.preprocess(state) for _ in range(16)])
+    in_t = preprocessor.preprocess(state)
 
     device_token = "cuda" if torch.cuda.is_available() else "cpu"
     device = torch.device(device_token)
 
     n_actions = env.action_space.n
     input_shape = tuple(in_t.shape)[1:]
-    in_t = in_t.to(device)
     model = AtariModel(input_shape, n_actions).to(device)
-    model.eval()
 
-    with torch.no_grad():
-        log_probs_out, value_out = model(in_t)
-        probs_out = F.softmax(log_probs_out, dim=1)
-
-    print("")
+    optimizer = Adam(model.parameters(), lr=lr)
 
     environments = [wrap_deepmind(make_atari(env_name)) for _ in range(env_count)]
-
     dataset = EnvironmentsDataset(environments, model, n_steps, gamma, batch_size, preprocessor, device)
 
-    batches = deque(maxlen=30)
     for batch in dataset.data():
         states_t = torch.cat(batch.states).to(device)
         actions = batch.actions
@@ -151,105 +151,19 @@ def main():
         log_probs_out, value_out = model(states_t)
         probs_out = F.softmax(log_probs_out, dim=1)
 
-        value_loss = F.mse_loss(value_out.squeeze(), values_t)
+        value_loss = value_factor * F.mse_loss(value_out.squeeze(), values_t)
         policy_loss = advantages_t * log_probs_out[range(len(probs_out)), actions]
-        policy_loss = -policy_loss.mean()
-
-        entropy_loss = entropy_beta * (probs_out * log_probs_out).sum(dim=1).mean()
+        policy_loss = policy_factor * -policy_loss.mean()
+        entropy_loss = entropy_factor * (probs_out * log_probs_out).sum(dim=1).mean()
 
         loss = entropy_loss + value_loss + policy_loss
+
+        optimizer.zero_grad()
         loss.backward()
 
-        batches.append(batch)
-        print("")
+        nn.utils.clip_grad_norm_(model.parameters(), max_norm)
 
-
-def main_old():
-    logging.basicConfig(level=logging.INFO)
-
-    checkpoint_path = "model_checkpoints"
-    best_models_path = join(checkpoint_path, "best")
-    # run_id = f"two_states_in_{datetime.now():%d%m%Y_%H%M%S}"
-    # model_id = f"{run_id}"
-    # writer = SummaryWriter(comment=f"-{run_id}")
-    #
-    # makedirs(checkpoint_path, exist_ok=True)
-    # makedirs(best_models_path, exist_ok=True)
-    #
-    # device_token = "cuda" if torch.cuda.is_available() else "cpu"
-    # device = torch.device(device_token)
-    #
-    # n_rows, n_cols, n_to_win = 6, 7, 4
-    #
-    # if pretrained:
-    #     load_checkpoint(pretrained_model_path, model, device=device)
-    #     logger.info(f"Loaded pretrained model from \"{pretrained_model_path}\".")
-    #
-    # optimizer = SGD(model.parameters(), lr=lr, momentum=momentum, weight_decay=l2_regularization)
-    # scheduler = MultiStepLR(optimizer, milestones=milestones)
-    #
-    # curr_epoch_idx = 0
-    # curr_train_batch_idx = 0
-    # best_model_idx = 0
-    # n_total_train_games = 0
-    # n_total_eval_games = 0
-    #
-    # graceful_exit = GracefulExit()
-    #
-    # while graceful_exit.run:
-    #
-    #     epoch_loss = 0.0
-    #     epoch_policy_loss = 0.0
-    #     epoch_value_loss = 0.0
-    #     count_batches = 0
-    #
-    #     model.train()
-    #     for _ in range(train_steps):
-    #         valid_start_idx = 0
-    #
-    #         vals_t = torch.tensor([lst[-1].value for lst in batch_samples], device=device, dtype=torch.float32)
-    #         probs_t = torch.tensor([lst[-1].probs for lst in batch_samples], device=device, dtype=torch.float32)
-    #
-    #         log_probs_out, val_out = model(states_t)
-    #
-    #         loss = value_loss + policy_loss
-    #
-    #         optimizer.zero_grad()
-    #         loss.backward()
-    #         optimizer.step()
-    #
-    #         # TODO scheduler step
-    #
-    #         batch_loss = loss.item()
-    #         writer.add_scalar("batch/loss", batch_loss, curr_train_batch_idx)
-    #         writer.add_scalar("batch/policy_loss", policy_loss.item(), curr_train_batch_idx)
-    #         writer.add_scalar("batch/value_loss", value_loss.item(), curr_train_batch_idx)
-    #
-    #         best_model_log = f"Best Model Idx: {best_model_idx - 1} " if best_model_idx > 0 else ""
-    #         logger.info(f"Epoch {curr_epoch_idx}: Training - "
-    #                     f"{best_model_log}Batch: {curr_train_batch_idx}: Loss {batch_loss}, "
-    #                     f"(Policy Loss: {policy_loss.item()}, Value Loss: {value_loss.item()})")
-    #
-    #         curr_train_batch_idx += 1
-    #         count_batches += 1
-    #
-    #         epoch_loss += batch_loss
-    #         epoch_policy_loss += policy_loss.item()
-    #         epoch_value_loss += value_loss.item()
-    #
-    #     epoch_loss /= max(1.0, count_batches)
-    #     epoch_policy_loss /= max(1.0, count_batches)
-    #     epoch_value_loss /= max(1.0, count_batches)
-    #
-    #
-    #     writer.add_scalar("epoch/loss", epoch_loss, curr_epoch_idx)
-    #     writer.add_scalar("epoch/policy_loss", epoch_policy_loss, curr_epoch_idx)
-    #     writer.add_scalar("epoch/value_loss", epoch_value_loss, curr_epoch_idx)
-    #     logger.info(f"Epoch {curr_epoch_idx}: Loss: {epoch_loss}, "
-    #                 f"Policy Loss: {epoch_policy_loss}, Value Loss: {epoch_value_loss}")
-    #
-    #     curr_epoch_idx += 1
-    pass
+        optimizer.step()
 
 
 if __name__ == "__main__":
