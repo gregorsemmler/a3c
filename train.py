@@ -18,6 +18,7 @@ from torch.utils.tensorboard import SummaryWriter
 from atari_wrappers import make_atari, wrap_deepmind
 from data import EpisodeResult, EnvironmentsDataset
 from model import SimplePreProcessor, AtariModel
+from utils import save_checkpoint
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +113,7 @@ def main():
     parser.add_argument("--env_name", type=str, default="PongNoFrameskip-v4")
     parser.add_argument("--device_token", default=None)
     parser.add_argument("--lr", type=float, default=1e-4)
+    parser.add_argument("--epoch_length", type=int, default=10000)
     args = parser.parse_args()
 
     env_name = args.env_name
@@ -156,36 +158,162 @@ def main():
     input_shape = tuple(in_t.shape)[1:]
     model = AtariModel(input_shape, n_actions).to(device)
 
-    optimizer = Adam(model.parameters(), lr=lr)
+    batch_id = 0
+    train(args, model)
 
-    environments = [wrap_deepmind(make_atari(env_name)) for _ in range(env_count)]
-    dataset = EnvironmentsDataset(environments, model, n_steps, gamma, batch_size, preprocessor, device)
+    print("")
 
-    for batch in dataset.data():
-        states_t = torch.cat(batch.states).to(device)
+
+class DummySummaryWriter(object):
+
+    def add_scalar(self, tag, scalar_value, global_step=None, walltime=None):
+        pass
+
+
+class ActorCriticTrainer(object):
+
+    def __init__(self, config, model, model_id, device, optimizer=None, scheduler=None, checkpoint_path=None,
+                 writer=None, batch_wise_scheduler=False):
+        self.value_factor = config.value_factor
+        self.policy_factor = config.policy_factor
+        self.entropy_factor = config.entropy_factor
+        self.max_norm = config.max_norm
+        self.lr = config.lr
+
+        self.model = model
+        self.model_id = model_id
+        self.optimizer = optimizer if optimizer is not None else Adam(model.parameters(), lr=self.lr)
+        self.writer = writer if writer is not None else DummySummaryWriter()
+        self.device = device
+        self.scheduler = scheduler
+        self.checkpoint_path = checkpoint_path
+        self.curr_epoch_idx = 0
+        self.curr_train_batch_idx = 0
+        self.curr_val_batch_idx = 0
+        self.batch_wise_scheduler = batch_wise_scheduler
+
+    def scheduler_step(self):
+        if self.scheduler is not None:
+            current_lr = self.scheduler.optimizer.param_groups[0]["lr"]
+
+            try:
+                self.scheduler.step()
+            except UnboundLocalError as e:  # For catching OneCycleLR errors when stepping too often
+                return
+            log_prefix = "batch" if self.batch_wise_scheduler else "epoch"
+            log_idx = self.curr_train_batch_idx if self.batch_wise_scheduler else self.curr_epoch_idx
+            self.writer.add_scalar(f"{log_prefix}/lr", current_lr, log_idx)
+
+    def save_checkpoint(self):
+        if self.checkpoint_path is None:
+            return
+
+        filename = f"{self.model_id}_{self.curr_epoch_idx:03d}.tar"
+        path = join(self.checkpoint_path, filename)
+        save_checkpoint(path, self.model, self.optimizer)
+
+    def fit(self, dataset_train, dataset_validate, num_epochs=10, training_seed=None):
+        if training_seed is not None:
+            np.random.seed(training_seed)
+            torch.backends.cudnn.deterministic = True
+            torch.backends.cudnn.benchmark = False
+            torch.manual_seed(training_seed)
+
+        self.curr_epoch_idx = 0
+        self.curr_train_batch_idx = 0
+        self.curr_val_batch_idx = 0
+
+        logger.info(f"Starting Training For {num_epochs} epochs.")
+        for _ in range(num_epochs):
+            logger.info(f"Epoch {self.curr_epoch_idx}")
+            logger.info(f"Training")
+            self.train(dataset_train)
+            logger.info(f"Validation")
+            self.validate(dataset_validate)
+
+            if not self.batch_wise_scheduler:
+                self.scheduler_step()
+            self.curr_epoch_idx += 1
+            self.save_checkpoint()
+
+    def train(self, dataset):
+        self.model.train()
+
+        epoch_loss = 0.0
+        count_batches = 0
+
+        for batch in dataset.batches():
+            batch_loss = self.training_step(batch, self.curr_train_batch_idx)
+            self.writer.add_scalar("train_batch/loss", batch_loss, self.curr_train_batch_idx)
+            logger.info(
+                f"Training - Epoch: {self.curr_epoch_idx} Batch: {self.curr_train_batch_idx}: Loss {batch_loss}")
+            self.curr_train_batch_idx += 1
+            count_batches += 1
+            epoch_loss += batch_loss
+
+        epoch_loss /= max(1.0, count_batches)
+        self.writer.add_scalar("train_epoch/loss", epoch_loss, self.curr_epoch_idx)
+        logger.info(f"Training - Epoch {self.curr_epoch_idx}: Loss {epoch_loss}")
+
+    def training_step(self, batch, batch_idx):
+        states_t = torch.cat(batch.states).to(self.device)
         actions = batch.actions
-        values_t = torch.FloatTensor(np.array(batch.values)).to(device)
-        advantages_t = torch.FloatTensor(np.array(batch.advantages)).to(device)
+        values_t = torch.FloatTensor(np.array(batch.values)).to(self.device)
+        advantages_t = torch.FloatTensor(np.array(batch.advantages)).to(self.device)
 
-        log_probs_out, value_out = model(states_t)
+        log_probs_out, value_out = self.model(states_t)
         probs_out = F.softmax(log_probs_out, dim=1)
 
-        value_loss = value_factor * F.mse_loss(value_out.squeeze(), values_t)
+        value_loss = self.value_factor * F.mse_loss(value_out.squeeze(), values_t)
         policy_loss = advantages_t * log_probs_out[range(len(probs_out)), actions]
-        policy_loss = policy_factor * -policy_loss.mean()
-        entropy_loss = entropy_factor * (probs_out * log_probs_out).sum(dim=1).mean()
+        policy_loss = self.policy_factor * -policy_loss.mean()
+        entropy_loss = self.entropy_factor * (probs_out * log_probs_out).sum(dim=1).mean()
 
         loss = entropy_loss + value_loss + policy_loss
 
-        optimizer.zero_grad()
+        self.optimizer.zero_grad()
         loss.backward()
 
-        nn.utils.clip_grad_norm_(model.parameters(), max_norm)
+        nn.utils.clip_grad_norm_(self.model.parameters(), self.max_norm)
 
-        optimizer.step()
+        self.optimizer.step()
+        if self.batch_wise_scheduler:
+            self.scheduler_step()
+
+        return loss.item()
+
+    def validate(self, dataset):
+        self.model.eval()
+
+        epoch_loss = 0.0
+        count_batches = 0
+
+        with torch.no_grad():
+            for batch in dataset.batches():
+                batch_loss = self.validation_step(batch, self.curr_val_batch_idx)
+                logger.info(
+                    f"Validation - Epoch: {self.curr_epoch_idx} Batch: {self.curr_val_batch_idx}: Loss {batch_loss}")
+                self.writer.add_scalar("val_batch/loss", batch_loss, self.curr_val_batch_idx)
+
+                self.curr_val_batch_idx += 1
+                count_batches += 1
+                epoch_loss += batch_loss
+
+        epoch_loss /= max(1.0, count_batches)
+
+        self.writer.add_scalar("val_epoch/loss", epoch_loss, self.curr_epoch_idx)
+        logger.info(f"Validation - Epoch {self.curr_epoch_idx}: Loss {epoch_loss}")
+
+    def validation_step(self, batch, batch_idx):
+        model_in, gt = self.get_inputs_and_ground_truth(batch)
+
+        model_out = self.model_output(model_in)
+        loss = self.calculate_loss(model_out, gt)
+
+        return loss.item()
 
 
-def train(config, global_model=None):
+def train(config, model, optimizer=None):
     env_name = config.env_name
     env_count = config.n_envs
     n_steps = config.n_steps
@@ -207,20 +335,10 @@ def train(config, global_model=None):
 
     device = torch.device(device_token)
 
-    env = wrap_deepmind(make_atari(env_name))
-    state = env.reset()
-
     preprocessor = SimplePreProcessor()
-    in_t = preprocessor.preprocess(state)
 
-    n_actions = env.action_space.n
-    input_shape = tuple(in_t.shape)[1:]
-    model = AtariModel(input_shape, n_actions).to(device)
-
-    if global_model is not None:
-        model.load_state_dict(global_model.state_dict())
-
-    optimizer = Adam(model.parameters(), lr=lr)
+    if optimizer is None:
+        optimizer = Adam(model.parameters(), lr=lr)
 
     environments = [wrap_deepmind(make_atari(env_name)) for _ in range(env_count)]
     dataset = EnvironmentsDataset(environments, model, n_steps, gamma, batch_size, preprocessor, device)
