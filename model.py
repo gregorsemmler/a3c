@@ -17,6 +17,10 @@ def get_output_shape(layer, shape):
     return before_flattening, after_flattening
 
 
+def sync_gradients(model, global_model):
+    pass
+
+
 class SimplePreProcessor(object):
 
     def __init__(self, dtype=torch.float32):

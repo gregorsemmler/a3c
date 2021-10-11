@@ -1,3 +1,4 @@
+import argparse
 import logging
 import uuid
 from collections import deque
@@ -99,19 +100,40 @@ def actor_critic_old(env, policy, v, num_iterations=10000, batch_size=32, gamma=
 def main():
     logging.basicConfig(level=logging.INFO)
 
-    env_name = "PongNoFrameskip-v4"
-    env_count = 16
-    n_steps = 10
-    gamma = 0.99
-    batch_size = 128
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--n_envs", type=int, default=16)
+    parser.add_argument("--n_steps", type=int, default=10)
+    parser.add_argument("--gamma", type=float, default=0.99)
+    parser.add_argument("--batch_size", type=int, default=128)
+    parser.add_argument("--value_factor", type=float, default=1.0)
+    parser.add_argument("--policy_factor", type=float, default=1.0)
+    parser.add_argument("--entropy_factor", type=float, default=0.01)
+    parser.add_argument("--max_norm", type=float, default=0.5)
+    parser.add_argument("--env_name", type=str, default="PongNoFrameskip-v4")
+    parser.add_argument("--device_token", default=None)
+    parser.add_argument("--lr", type=float, default=1e-4)
+    args = parser.parse_args()
 
-    value_factor = 1.0
-    policy_factor = 1.0
-    entropy_factor = 0.01
+    env_name = args.env_name
+    env_count = args.n_envs
+    n_steps = args.n_steps
+    gamma = args.gamma
+    batch_size = args.batch_size
 
-    max_norm = 0.5
+    value_factor = args.value_factor
+    policy_factor = args.policy_factor
+    entropy_factor = args.entropy_factor
 
-    lr = 1e-4
+    max_norm = args.max_norm
+
+    lr = args.lr
+
+    if args.device_token is None:
+        device_token = "cuda" if torch.cuda.is_available() else "cpu"
+    else:
+        device_token = args.device_token
+
+    device = torch.device(device_token)
 
     checkpoint_path = "model_checkpoints"
     best_models_path = join(checkpoint_path, "best")
@@ -129,9 +151,6 @@ def main():
 
     preprocessor = SimplePreProcessor()
     in_t = preprocessor.preprocess(state)
-
-    device_token = "cuda" if torch.cuda.is_available() else "cpu"
-    device = torch.device(device_token)
 
     n_actions = env.action_space.n
     input_shape = tuple(in_t.shape)[1:]
@@ -164,6 +183,71 @@ def main():
         nn.utils.clip_grad_norm_(model.parameters(), max_norm)
 
         optimizer.step()
+
+
+def train(config, global_model=None):
+    env_name = config.env_name
+    env_count = config.n_envs
+    n_steps = config.n_steps
+    gamma = config.gamma
+    batch_size = config.batch_size
+
+    value_factor = config.value_factor
+    policy_factor = config.policy_factor
+    entropy_factor = config.entropy_factor
+
+    max_norm = config.max_norm
+
+    lr = config.lr
+
+    if config.device_token is None:
+        device_token = "cuda" if torch.cuda.is_available() else "cpu"
+    else:
+        device_token = config.device_token
+
+    device = torch.device(device_token)
+
+    env = wrap_deepmind(make_atari(env_name))
+    state = env.reset()
+
+    preprocessor = SimplePreProcessor()
+    in_t = preprocessor.preprocess(state)
+
+    n_actions = env.action_space.n
+    input_shape = tuple(in_t.shape)[1:]
+    model = AtariModel(input_shape, n_actions).to(device)
+
+    if global_model is not None:
+        model.load_state_dict(global_model.state_dict())
+
+    optimizer = Adam(model.parameters(), lr=lr)
+
+    environments = [wrap_deepmind(make_atari(env_name)) for _ in range(env_count)]
+    dataset = EnvironmentsDataset(environments, model, n_steps, gamma, batch_size, preprocessor, device)
+
+    for batch in dataset.data():
+        states_t = torch.cat(batch.states).to(device)
+        actions = batch.actions
+        values_t = torch.FloatTensor(np.array(batch.values)).to(device)
+        advantages_t = torch.FloatTensor(np.array(batch.advantages)).to(device)
+
+        log_probs_out, value_out = model(states_t)
+        probs_out = F.softmax(log_probs_out, dim=1)
+
+        value_loss = value_factor * F.mse_loss(value_out.squeeze(), values_t)
+        policy_loss = advantages_t * log_probs_out[range(len(probs_out)), actions]
+        policy_loss = policy_factor * -policy_loss.mean()
+        entropy_loss = entropy_factor * (probs_out * log_probs_out).sum(dim=1).mean()
+
+        loss = entropy_loss + value_loss + policy_loss
+
+        optimizer.zero_grad()
+        loss.backward()
+
+        nn.utils.clip_grad_norm_(model.parameters(), max_norm)
+
+        optimizer.step()
+    pass
 
 
 if __name__ == "__main__":
