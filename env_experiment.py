@@ -6,7 +6,7 @@ from gym import envs
 
 from atari_wrappers import wrap_deepmind, make_atari
 from data import EnvironmentsDataset
-from model import SimplePreProcessor, AtariModel
+from model import SimpleCNNPreProcessor, AtariModel
 
 
 def main():
@@ -22,7 +22,7 @@ def main():
     env = wrap_deepmind(make_atari(env_name))
     state = env.reset()
 
-    preprocessor = SimplePreProcessor()
+    preprocessor = SimpleCNNPreProcessor()
     in_t = preprocessor.preprocess(state)
 
     device_token = "cuda" if torch.cuda.is_available() else "cpu"

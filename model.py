@@ -17,11 +17,13 @@ def get_output_shape(layer, shape):
     return before_flattening, after_flattening
 
 
-def sync_gradients(model, global_model):
-    pass
+class PreProcessor(object):
+
+    def preprocess(self, x):
+        raise NotImplementedError()
 
 
-class SimplePreProcessor(object):
+class SimpleCNNPreProcessor(PreProcessor):
 
     def __init__(self, dtype=torch.float32):
         self.dtype = dtype
@@ -31,14 +33,55 @@ class SimplePreProcessor(object):
         return torch.from_numpy((state / 255.0).transpose(2, 0, 1)[np.newaxis, :, :]).type(self.dtype)
 
 
-class ActorCriticModel(nn.Module):
+class NoopPreProcessor(PreProcessor):
+
+    def __init__(self, dtype=torch.float32):
+        self.dtype = dtype
+
+    def preprocess(self, x):
+        return torch.from_numpy(x[np.newaxis, :]).type(self.dtype)
+
+
+class DiscreteActorCriticModel(nn.Module):
 
     @property
     def num_actions(self) -> int:
         raise NotImplementedError()
 
 
-class AtariModel(ActorCriticModel):
+class MLPModel(DiscreteActorCriticModel):
+
+    def __init__(self, input_size, num_actions, fully_params=(512, 512)):
+        super().__init__()
+        self.n_actions = num_actions
+        self.input_size = input_size
+
+        policy_layers = []
+        value_layers = []
+
+        prev_full_n = self.input_size
+        for full_n in fully_params:
+            policy_layers.append(nn.Linear(prev_full_n, full_n))
+            policy_layers.append(nn.ReLU(inplace=True))
+            value_layers.append(nn.Linear(prev_full_n, full_n))
+            value_layers.append(nn.ReLU(inplace=True))
+            prev_full_n = full_n
+
+        policy_layers.append(nn.Linear(prev_full_n, num_actions))
+        value_layers.append(nn.Linear(prev_full_n, 1))
+
+        self.policy = nn.Sequential(*policy_layers)
+        self.value = nn.Sequential(*value_layers)
+
+    @property
+    def num_actions(self) -> int:
+        return self.n_actions
+
+    def forward(self, x):
+        return self.policy(x), self.value(x)
+
+
+class AtariModel(DiscreteActorCriticModel):
 
     def __init__(self, input_shape, num_actions, conv_params=((16, 8, 4, 0), (32, 4, 2, 0)), fully_params=(256,)):
         super().__init__()
@@ -110,7 +153,7 @@ class ResidualBlock(nn.Module):
         return out
 
 
-class ResidualModel(ActorCriticModel):
+class ResidualModel(DiscreteActorCriticModel):
 
     def __init__(self, input_shape, num_filters, num_residual_blocks, val_hidden_size, num_actions):
         super().__init__()
@@ -151,8 +194,7 @@ class ResidualModel(ActorCriticModel):
             nn.Flatten(),
             nn.Linear(val_conv_flat, self.val_hidden_size),
             nn.ReLU(inplace=True),
-            nn.Linear(self.val_hidden_size, 1),
-            nn.Tanh()
+            nn.Linear(self.val_hidden_size, 1)
         )
 
     @property

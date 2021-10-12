@@ -7,7 +7,7 @@ import torch.nn.functional as F
 from gym import Env
 from torch.distributions import Categorical
 
-from model import ActorCriticModel
+from model import DiscreteActorCriticModel
 
 logger = logging.getLogger(__name__)
 
@@ -64,11 +64,11 @@ class EpisodeResult(object):
             idx = n - self.get_offset
         else:
             idx = n
-        return -min(idx, len(self.states))
+        return -min(idx, len(self.rewards))
 
     def n_step_stats(self, n):
         n_step_idx = self.n_step_idx(n)
-        cur_state = self.states[n_step_idx]
+        cur_state = self.states[n_step_idx-1]
         rewards = self.rewards[n_step_idx:]
         action = self.actions[n_step_idx]
         return cur_state, action, rewards
@@ -133,7 +133,7 @@ class ActorCriticBatch(object):
 
 class EnvironmentsDataset(object):
 
-    def __init__(self, envs: Sequence[Env], model: ActorCriticModel, n_steps, gamma, batch_size, preprocessor, device,
+    def __init__(self, envs: Sequence[Env], model: DiscreteActorCriticModel, n_steps, gamma, batch_size, preprocessor, device,
                  action_selector=None, epoch_length=None):
         self.envs = {idx: e for idx, e in enumerate(envs)}
         self.model = model
@@ -192,7 +192,7 @@ class EnvironmentsDataset(object):
                     er.update_offset(self.n_steps)
 
                 if len(batch) >= self.batch_size:
-                    yield batch
+                    yield batch  # TODO yield only part of batch if it's too big here
                     batch = ActorCriticBatch()
 
                     if self.epoch_length is not None:
@@ -205,5 +205,5 @@ class EnvironmentsDataset(object):
 
     def step(self, actions):
         for (k, er), a in zip(sorted(self.episode_results.items()), actions):
-            s, r, d, i = er.env.step(a)
+            s, r, d, i = er.env.step(int(a))
             er.append(int(a), r, s, d, i)

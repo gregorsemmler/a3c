@@ -17,7 +17,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 from atari_wrappers import make_atari, wrap_deepmind
 from data import EpisodeResult, EnvironmentsDataset
-from model import SimplePreProcessor, AtariModel
+from model import SimpleCNNPreProcessor, AtariModel, MLPModel, NoopPreProcessor
 from utils import save_checkpoint
 
 logger = logging.getLogger(__name__)
@@ -180,15 +180,17 @@ def main():
     logging.basicConfig(level=logging.INFO)
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--n_envs", type=int, default=16)
-    parser.add_argument("--n_steps", type=int, default=10)
+    parser.add_argument("--n_envs", type=int, default=100)
+    parser.add_argument("--n_steps", type=int, default=20)
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--batch_size", type=int, default=128)
-    parser.add_argument("--value_factor", type=float, default=1.0)
+    parser.add_argument("--value_factor", type=float, default=0.5)
     parser.add_argument("--policy_factor", type=float, default=1.0)
     parser.add_argument("--entropy_factor", type=float, default=0.01)
     parser.add_argument("--max_norm", type=float, default=0.5)
-    parser.add_argument("--env_name", type=str, default="PongNoFrameskip-v4")
+    # parser.add_argument("--env_name", type=str, default="PongNoFrameskip-v4")
+    parser.add_argument("--env_name", type=str, default="CartPole-v0")
+    parser.add_argument("--is_atari", type=bool, default=False)
     parser.add_argument("--device_token", default=None)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--epoch_length", type=int, default=10000)
@@ -199,6 +201,7 @@ def main():
     n_steps = args.n_steps
     gamma = args.gamma
     batch_size = args.batch_size
+    is_atari = args.is_atari
 
     if args.device_token is None:
         device_token = "cuda" if torch.cuda.is_available() else "cpu"
@@ -218,17 +221,28 @@ def main():
     makedirs(best_models_path, exist_ok=True)
 
     env_names = sorted(envs.registry.env_specs.keys())
-    env = wrap_deepmind(make_atari(env_name))
-    state = env.reset()
 
-    preprocessor = SimplePreProcessor()
-    in_t = preprocessor.preprocess(state)
+    if is_atari:
+        env = wrap_deepmind(make_atari(env_name))
+        state = env.reset()
 
-    n_actions = env.action_space.n
-    input_shape = tuple(in_t.shape)[1:]
-    model = AtariModel(input_shape, n_actions).to(device)
+        preprocessor = SimpleCNNPreProcessor()
+        in_t = preprocessor.preprocess(state)
+        n_actions = env.action_space.n
+        input_shape = tuple(in_t.shape)[1:]
+        model = AtariModel(input_shape, n_actions).to(device)
 
-    environments = [wrap_deepmind(make_atari(env_name)) for _ in range(env_count)]
+        environments = [wrap_deepmind(make_atari(env_name)) for _ in range(env_count)]
+    else:
+        env = gym.make(env_name)
+        state = env.reset()
+        in_states = state.shape[0]
+        num_actions = env.action_space.n
+        model = MLPModel(in_states, num_actions).to(device)
+
+        preprocessor = NoopPreProcessor()
+        environments = [gym.make(env_name) for _ in range(env_count)]
+
     dataset = EnvironmentsDataset(environments, model, n_steps, gamma, batch_size, preprocessor, device)
 
     trainer = ActorCriticTrainer(args, model, model_id, trainer_id=1, writer=writer)
