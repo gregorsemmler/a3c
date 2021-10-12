@@ -23,79 +23,157 @@ from utils import save_checkpoint
 logger = logging.getLogger(__name__)
 
 
-# TODO update
-def actor_critic_old(env, policy, v, num_iterations=10000, batch_size=32, gamma=0.99, alpha=0.01,
-                     summary_writer: SummaryWriter = None, summary_prefix=""):
-    i = 0
-    total_p_losses = []
-    total_v_losses = []
-    episode_returns = []
-    episode_lengths = []
+class DummySummaryWriter(object):
 
-    while i < num_iterations:
-        state = env.reset()
-        done = False
-        episode_result = EpisodeResult(env, state)
+    def add_scalar(self, tag, scalar_value, global_step=None, walltime=None):
+        pass
 
-        discount_factor = 1.0
-        while not done:
-            action = policy(state)
-            new_state, reward, done, info = env.step(action)
-            episode_result.append(action, reward, state, done)
 
-            v_state, v_new_state = v(state), v(new_state)
-            if done:
-                delta = reward  # value of terminal states (v_new_state) should be zero
-            else:
-                delta = reward + gamma * v_new_state
+class ActorCriticTrainer(object):
 
-            v.append_x_y_pair(state, delta)
-            policy.append(state, action, discount_factor * delta)
+    def __init__(self, config, model, model_id, trainer_id=None, optimizer=None, scheduler=None, checkpoint_path=None,
+                 writer=None, batch_wise_scheduler=False):
+        self.value_factor = config.value_factor
+        self.policy_factor = config.policy_factor
+        self.entropy_factor = config.entropy_factor
+        self.max_norm = config.max_norm
+        self.lr = config.lr
 
-            if len(policy.state_batches) > batch_size:
-                p_losses = policy.policy_gradient_approximation(batch_size)
-                v_losses = v.approximate(batch_size)
-                if summary_writer is not None:
-                    for l_idx, l in enumerate(p_losses):
-                        summary_writer.add_scalar(f"{summary_prefix}batch_policy_loss", l, len(total_p_losses) + l_idx)
-                    for l_idx, l in enumerate(v_losses):
-                        summary_writer.add_scalar(f"{summary_prefix}batch_value_loss", l, len(total_v_losses) + l_idx)
-                total_p_losses.extend(p_losses)
-                total_v_losses.extend(v_losses)
+        if config.device_token is None:
+            device_token = "cuda" if torch.cuda.is_available() else "cpu"
+        else:
+            device_token = config.device_token
+        self.device = torch.device(device_token)
 
-            discount_factor *= gamma
-            state = new_state
+        self.trainer_id = "" if trainer_id is None else f"{trainer_id}_"
+        self.model = model
+        self.model_id = model_id
+        self.optimizer = optimizer if optimizer is not None else Adam(model.parameters(), lr=self.lr)
+        self.writer = writer if writer is not None else DummySummaryWriter()
 
-        ep_return = episode_result.calculate_return(gamma)
-        ep_length = len(episode_result.states) - 1
+        self.scheduler = scheduler
+        self.checkpoint_path = checkpoint_path
+        self.curr_epoch_idx = 0
+        self.curr_train_batch_idx = 0
+        self.curr_val_batch_idx = 0
+        self.batch_wise_scheduler = batch_wise_scheduler
 
-        if summary_writer is not None:
-            summary_writer.add_scalar(f"{summary_prefix}episode_length", ep_length, len(episode_lengths))
-            summary_writer.add_scalar(f"{summary_prefix}episode_return", ep_return, len(episode_returns))
+    def scheduler_step(self):
+        if self.scheduler is not None:
+            current_lr = self.scheduler.optimizer.param_groups[0]["lr"]
 
-        episode_returns.append(ep_return)
-        episode_lengths.append(ep_length)
-        last_100_average = np.array(episode_returns[-100:]).mean()
+            try:
+                self.scheduler.step()
+            except UnboundLocalError as e:  # For catching OneCycleLR errors when stepping too often
+                return
+            log_prefix = "batch" if self.batch_wise_scheduler else "epoch"
+            log_idx = self.curr_train_batch_idx if self.batch_wise_scheduler else self.curr_epoch_idx
+            self.writer.add_scalar(f"{log_prefix}/{self.trainer_id}lr", current_lr, log_idx)
 
-        logger.info(
-            f"{i}: Length: {ep_length} \t Return: {ep_return:.2f} \t Last 100 Average: {last_100_average:.2f}")
+    def save_checkpoint(self):
+        if self.checkpoint_path is None:
+            return
 
-        i += 1
+        filename = f"{self.model_id}_{self.curr_epoch_idx:03d}.tar"
+        path = join(self.checkpoint_path, filename)
+        save_checkpoint(path, self.model, self.optimizer)
 
-        if i % 100 == 0:
-            print("{} iterations done".format(i))
+    def fit(self, dataset_train, dataset_validate, num_epochs=10, training_seed=None):
+        if training_seed is not None:
+            np.random.seed(training_seed)
+            torch.backends.cudnn.deterministic = True
+            torch.backends.cudnn.benchmark = False
+            torch.manual_seed(training_seed)
 
-    p_losses = policy.policy_gradient_approximation(batch_size)
-    v_losses = v.approximate(batch_size)
-    if summary_writer is not None:
-        for l_idx, l in enumerate(p_losses):
-            summary_writer.add_scalar(f"{summary_prefix}batch_policy_loss", l, len(total_p_losses) + l_idx)
-        for l_idx, l in enumerate(v_losses):
-            summary_writer.add_scalar(f"{summary_prefix}batch_value_loss", l, len(total_v_losses) + l_idx)
-    total_p_losses.extend(p_losses)
-    total_v_losses.extend(v_losses)
+        self.curr_epoch_idx = 0
+        self.curr_train_batch_idx = 0
+        self.curr_val_batch_idx = 0
 
-    return total_p_losses, total_v_losses
+        logger.info(f"{self.trainer_id}Starting Training For {num_epochs} epochs.")
+        for _ in range(num_epochs):
+            logger.info(f"{self.trainer_id}Epoch {self.curr_epoch_idx}")
+            logger.info(f"{self.trainer_id}Training")
+            self.train(dataset_train)
+            logger.info(f"{self.trainer_id}Validation")
+            self.validate(dataset_validate)
+
+            if not self.batch_wise_scheduler:
+                self.scheduler_step()
+            self.curr_epoch_idx += 1
+            self.save_checkpoint()
+
+    def train(self, dataset):
+        self.model.train()
+
+        ep_l = 0.0
+        ep_p_l = 0.0
+        ep_v_l = 0.0
+        ep_e_l = 0.0
+        count_batches = 0
+
+        for batch in dataset.data():
+            b_l, p_l, v_l, e_l = self.training_step(batch, self.curr_train_batch_idx)
+            self.writer.add_scalar(f"train_batch/{self.trainer_id}loss", b_l, self.curr_train_batch_idx)
+            self.writer.add_scalar(f"train_batch/{self.trainer_id}policy_loss", p_l, self.curr_train_batch_idx)
+            self.writer.add_scalar(f"train_batch/{self.trainer_id}value_loss", v_l, self.curr_train_batch_idx)
+            self.writer.add_scalar(f"train_batch/{self.trainer_id}entropy_loss", e_l, self.curr_train_batch_idx)
+
+            logger.info(f"{self.trainer_id}Training - Epoch: {self.curr_epoch_idx} Batch: {self.curr_train_batch_idx}: "
+                        f"Loss: {b_l:.6f} Policy Loss: {p_l:.6f} Value Loss: {v_l:.6f} Entropy Loss: {e_l:.6f}")
+            self.curr_train_batch_idx += 1
+            count_batches += 1
+            ep_l += b_l
+            ep_p_l += p_l
+            ep_v_l += v_l
+            ep_e_l += e_l
+
+        ep_l /= max(1.0, count_batches)
+        ep_p_l /= max(1.0, count_batches)
+        ep_v_l /= max(1.0, count_batches)
+        ep_e_l /= max(1.0, count_batches)
+
+        self.writer.add_scalar(f"train_epoch/{self.trainer_id}loss", ep_l, self.curr_epoch_idx)
+        self.writer.add_scalar(f"train_epoch/{self.trainer_id}policy_loss", ep_p_l, self.curr_epoch_idx)
+        self.writer.add_scalar(f"train_epoch/{self.trainer_id}value_loss", ep_v_l, self.curr_epoch_idx)
+        self.writer.add_scalar(f"train_epoch/{self.trainer_id}entropy_loss", ep_e_l, self.curr_epoch_idx)
+        logger.info(f"{self.trainer_id}Training - Epoch {self.curr_epoch_idx}: Loss: {ep_l:.6f} "
+                    f"Policy Loss: {ep_p_l:.6f} Value Loss: {ep_v_l:.6f} Entropy Loss: {ep_e_l:.6f}")
+
+    def training_step(self, batch, batch_idx):
+        states_t = torch.cat(batch.states).to(self.device)
+        actions = batch.actions
+        values_t = torch.FloatTensor(np.array(batch.values)).to(self.device)
+        advantages_t = torch.FloatTensor(np.array(batch.advantages)).to(self.device)
+
+        log_probs_out, value_out = self.model(states_t)
+        probs_out = F.softmax(log_probs_out, dim=1)
+
+        value_loss = self.value_factor * F.mse_loss(value_out.squeeze(), values_t)
+        policy_loss = advantages_t * log_probs_out[range(len(probs_out)), actions]
+        policy_loss = self.policy_factor * -policy_loss.mean()
+        entropy_loss = self.entropy_factor * (probs_out * log_probs_out).sum(dim=1).mean()
+
+        loss = entropy_loss + value_loss + policy_loss
+
+        self.optimizer.zero_grad()
+        loss.backward()
+
+        if self.max_norm is not None:
+            nn.utils.clip_grad_norm_(self.model.parameters(), self.max_norm)
+
+        self.optimizer.step()
+        if self.batch_wise_scheduler:
+            self.scheduler_step()
+
+        return loss.item(), policy_loss.item(), value_loss.item(), entropy_loss.item()
+
+    def validate(self, dataset):
+        # TODO implement
+        pass
+
+    def validation_step(self, batch, batch_idx):
+        # TODO implement
+        pass
 
 
 def main():
@@ -121,14 +199,6 @@ def main():
     n_steps = args.n_steps
     gamma = args.gamma
     batch_size = args.batch_size
-
-    value_factor = args.value_factor
-    policy_factor = args.policy_factor
-    entropy_factor = args.entropy_factor
-
-    max_norm = args.max_norm
-
-    lr = args.lr
 
     if args.device_token is None:
         device_token = "cuda" if torch.cuda.is_available() else "cpu"
@@ -158,214 +228,13 @@ def main():
     input_shape = tuple(in_t.shape)[1:]
     model = AtariModel(input_shape, n_actions).to(device)
 
-    batch_id = 0
-    train(args, model)
-
-    print("")
-
-
-class DummySummaryWriter(object):
-
-    def add_scalar(self, tag, scalar_value, global_step=None, walltime=None):
-        pass
-
-
-class ActorCriticTrainer(object):
-
-    def __init__(self, config, model, model_id, device, optimizer=None, scheduler=None, checkpoint_path=None,
-                 writer=None, batch_wise_scheduler=False):
-        self.value_factor = config.value_factor
-        self.policy_factor = config.policy_factor
-        self.entropy_factor = config.entropy_factor
-        self.max_norm = config.max_norm
-        self.lr = config.lr
-
-        self.model = model
-        self.model_id = model_id
-        self.optimizer = optimizer if optimizer is not None else Adam(model.parameters(), lr=self.lr)
-        self.writer = writer if writer is not None else DummySummaryWriter()
-        self.device = device
-        self.scheduler = scheduler
-        self.checkpoint_path = checkpoint_path
-        self.curr_epoch_idx = 0
-        self.curr_train_batch_idx = 0
-        self.curr_val_batch_idx = 0
-        self.batch_wise_scheduler = batch_wise_scheduler
-
-    def scheduler_step(self):
-        if self.scheduler is not None:
-            current_lr = self.scheduler.optimizer.param_groups[0]["lr"]
-
-            try:
-                self.scheduler.step()
-            except UnboundLocalError as e:  # For catching OneCycleLR errors when stepping too often
-                return
-            log_prefix = "batch" if self.batch_wise_scheduler else "epoch"
-            log_idx = self.curr_train_batch_idx if self.batch_wise_scheduler else self.curr_epoch_idx
-            self.writer.add_scalar(f"{log_prefix}/lr", current_lr, log_idx)
-
-    def save_checkpoint(self):
-        if self.checkpoint_path is None:
-            return
-
-        filename = f"{self.model_id}_{self.curr_epoch_idx:03d}.tar"
-        path = join(self.checkpoint_path, filename)
-        save_checkpoint(path, self.model, self.optimizer)
-
-    def fit(self, dataset_train, dataset_validate, num_epochs=10, training_seed=None):
-        if training_seed is not None:
-            np.random.seed(training_seed)
-            torch.backends.cudnn.deterministic = True
-            torch.backends.cudnn.benchmark = False
-            torch.manual_seed(training_seed)
-
-        self.curr_epoch_idx = 0
-        self.curr_train_batch_idx = 0
-        self.curr_val_batch_idx = 0
-
-        logger.info(f"Starting Training For {num_epochs} epochs.")
-        for _ in range(num_epochs):
-            logger.info(f"Epoch {self.curr_epoch_idx}")
-            logger.info(f"Training")
-            self.train(dataset_train)
-            logger.info(f"Validation")
-            self.validate(dataset_validate)
-
-            if not self.batch_wise_scheduler:
-                self.scheduler_step()
-            self.curr_epoch_idx += 1
-            self.save_checkpoint()
-
-    def train(self, dataset):
-        self.model.train()
-
-        epoch_loss = 0.0
-        count_batches = 0
-
-        for batch in dataset.batches():
-            batch_loss = self.training_step(batch, self.curr_train_batch_idx)
-            self.writer.add_scalar("train_batch/loss", batch_loss, self.curr_train_batch_idx)
-            logger.info(
-                f"Training - Epoch: {self.curr_epoch_idx} Batch: {self.curr_train_batch_idx}: Loss {batch_loss}")
-            self.curr_train_batch_idx += 1
-            count_batches += 1
-            epoch_loss += batch_loss
-
-        epoch_loss /= max(1.0, count_batches)
-        self.writer.add_scalar("train_epoch/loss", epoch_loss, self.curr_epoch_idx)
-        logger.info(f"Training - Epoch {self.curr_epoch_idx}: Loss {epoch_loss}")
-
-    def training_step(self, batch, batch_idx):
-        states_t = torch.cat(batch.states).to(self.device)
-        actions = batch.actions
-        values_t = torch.FloatTensor(np.array(batch.values)).to(self.device)
-        advantages_t = torch.FloatTensor(np.array(batch.advantages)).to(self.device)
-
-        log_probs_out, value_out = self.model(states_t)
-        probs_out = F.softmax(log_probs_out, dim=1)
-
-        value_loss = self.value_factor * F.mse_loss(value_out.squeeze(), values_t)
-        policy_loss = advantages_t * log_probs_out[range(len(probs_out)), actions]
-        policy_loss = self.policy_factor * -policy_loss.mean()
-        entropy_loss = self.entropy_factor * (probs_out * log_probs_out).sum(dim=1).mean()
-
-        loss = entropy_loss + value_loss + policy_loss
-
-        self.optimizer.zero_grad()
-        loss.backward()
-
-        nn.utils.clip_grad_norm_(self.model.parameters(), self.max_norm)
-
-        self.optimizer.step()
-        if self.batch_wise_scheduler:
-            self.scheduler_step()
-
-        return loss.item()
-
-    def validate(self, dataset):
-        self.model.eval()
-
-        epoch_loss = 0.0
-        count_batches = 0
-
-        with torch.no_grad():
-            for batch in dataset.batches():
-                batch_loss = self.validation_step(batch, self.curr_val_batch_idx)
-                logger.info(
-                    f"Validation - Epoch: {self.curr_epoch_idx} Batch: {self.curr_val_batch_idx}: Loss {batch_loss}")
-                self.writer.add_scalar("val_batch/loss", batch_loss, self.curr_val_batch_idx)
-
-                self.curr_val_batch_idx += 1
-                count_batches += 1
-                epoch_loss += batch_loss
-
-        epoch_loss /= max(1.0, count_batches)
-
-        self.writer.add_scalar("val_epoch/loss", epoch_loss, self.curr_epoch_idx)
-        logger.info(f"Validation - Epoch {self.curr_epoch_idx}: Loss {epoch_loss}")
-
-    def validation_step(self, batch, batch_idx):
-        model_in, gt = self.get_inputs_and_ground_truth(batch)
-
-        model_out = self.model_output(model_in)
-        loss = self.calculate_loss(model_out, gt)
-
-        return loss.item()
-
-
-def train(config, model, optimizer=None):
-    env_name = config.env_name
-    env_count = config.n_envs
-    n_steps = config.n_steps
-    gamma = config.gamma
-    batch_size = config.batch_size
-
-    value_factor = config.value_factor
-    policy_factor = config.policy_factor
-    entropy_factor = config.entropy_factor
-
-    max_norm = config.max_norm
-
-    lr = config.lr
-
-    if config.device_token is None:
-        device_token = "cuda" if torch.cuda.is_available() else "cpu"
-    else:
-        device_token = config.device_token
-
-    device = torch.device(device_token)
-
-    preprocessor = SimplePreProcessor()
-
-    if optimizer is None:
-        optimizer = Adam(model.parameters(), lr=lr)
-
     environments = [wrap_deepmind(make_atari(env_name)) for _ in range(env_count)]
     dataset = EnvironmentsDataset(environments, model, n_steps, gamma, batch_size, preprocessor, device)
 
-    for batch in dataset.data():
-        states_t = torch.cat(batch.states).to(device)
-        actions = batch.actions
-        values_t = torch.FloatTensor(np.array(batch.values)).to(device)
-        advantages_t = torch.FloatTensor(np.array(batch.advantages)).to(device)
+    trainer = ActorCriticTrainer(args, model, model_id, trainer_id=1, writer=writer)
+    trainer.fit(dataset, dataset)
 
-        log_probs_out, value_out = model(states_t)
-        probs_out = F.softmax(log_probs_out, dim=1)
-
-        value_loss = value_factor * F.mse_loss(value_out.squeeze(), values_t)
-        policy_loss = advantages_t * log_probs_out[range(len(probs_out)), actions]
-        policy_loss = policy_factor * -policy_loss.mean()
-        entropy_loss = entropy_factor * (probs_out * log_probs_out).sum(dim=1).mean()
-
-        loss = entropy_loss + value_loss + policy_loss
-
-        optimizer.zero_grad()
-        loss.backward()
-
-        nn.utils.clip_grad_norm_(model.parameters(), max_norm)
-
-        optimizer.step()
-    pass
+    print("")
 
 
 if __name__ == "__main__":

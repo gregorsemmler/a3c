@@ -54,7 +54,7 @@ class EpisodeResult(object):
 
     def n_step_return(self, n, gamma, last_state_value):
         cur_state, action, rewards = self.n_step_stats(n)
-        result = 0.0 if n >= len(self.states) and self.done else last_state_value
+        result = 0.0 if self.done else last_state_value  # TODO recheck previous n>= len(self.states) condition here
         for r in reversed(rewards):
             result = r + gamma * result
         return result
@@ -134,7 +134,7 @@ class ActorCriticBatch(object):
 class EnvironmentsDataset(object):
 
     def __init__(self, envs: Sequence[Env], model: ActorCriticModel, n_steps, gamma, batch_size, preprocessor, device,
-                 action_selector=None):
+                 action_selector=None, epoch_length=None):
         self.envs = {idx: e for idx, e in enumerate(envs)}
         self.model = model
         self.num_actions = model.num_actions
@@ -147,10 +147,12 @@ class EnvironmentsDataset(object):
         self.device = device
         self.action_selector = default_action_selector if action_selector is None else action_selector
         self.episode_results = {}
+        self.epoch_length = epoch_length
+        self.reset()
 
     def data(self):
         batch = ActorCriticBatch()
-        self.reset()
+        cur_batch_idx = 0
 
         while True:
             sorted_ers = sorted(self.episode_results.items())
@@ -192,6 +194,11 @@ class EnvironmentsDataset(object):
                 if len(batch) >= self.batch_size:
                     yield batch
                     batch = ActorCriticBatch()
+
+                    if self.epoch_length is not None:
+                        cur_batch_idx += 1
+                        if cur_batch_idx >= self.epoch_length:
+                            return
 
     def reset(self):
         self.episode_results = {k: EpisodeResult(e, e.reset()) for k, e in self.envs.items()}

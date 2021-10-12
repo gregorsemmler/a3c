@@ -50,5 +50,30 @@ def main():
         print("")
 
 
+def main2():
+    yield_test = TestYield()
+
+    while True:
+        print("New Round")
+
+        for x in yield_test.yield_test():
+            print(x)
+
+
+class TestYield(object):
+
+    def __init__(self):
+        self.counter = 0
+
+    def yield_test(self):
+        n = 0
+        while True:
+            yield self.counter
+            self.counter += 1
+            n += 1
+            if n >= 10:
+                return
+
+
 if __name__ == "__main__":
-    main()
+    main2()
