@@ -36,7 +36,7 @@ class Policy(object):
 
 class EpisodeResult(object):
 
-    def __init__(self, env, start_state, episode_id=None, chain=True):
+    def __init__(self, env, start_state, episode_id=None, chain=True, partial_unroll=True):
         self.env = env
         self.states = [start_state]
         self.actions = []
@@ -46,6 +46,7 @@ class EpisodeResult(object):
         self.episode_id = episode_id if episode_id is not None else str(uuid.uuid4())
         self.chain = chain
         self.get_offset = 0
+        self.partial_unroll = partial_unroll
         self.next_episode_result = None
 
     def append(self, action, reward, state, done, info=None):
@@ -102,7 +103,7 @@ class EpisodeResult(object):
             return
 
         self.get_offset += 1
-        if self.get_offset >= n:
+        if self.get_offset >= n or not self.partial_unroll:
             self.set_to_next_episode_result()
 
     def begin_new_episode(self, episode_id=None, chain=True):

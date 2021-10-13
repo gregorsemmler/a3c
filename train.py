@@ -200,9 +200,9 @@ class ActorCriticTrainer(object):
                 logger.info("New best return: {}".format(best_return))
 
             episode_returns.append(episode_return)
-            i += 1
+            logger.info(f"Episode {i} Length & Return: {len(episode_result.states)} {episode_return:.3f}")
 
-            logger.info(f"Episode Length & Return: {len(episode_result.states)} {episode_return}")
+            i += 1
 
         return episode_returns, best_result, best_return
 
@@ -227,6 +227,8 @@ def main():
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--epoch_length", type=int, default=1000)
     parser.add_argument("--n_eval_episodes", type=int, default=1000)
+    parser.add_argument("--l2_regularization", type=float, default=1e-4)
+
     args = parser.parse_args()
 
     env_name = args.env_name
@@ -236,6 +238,7 @@ def main():
     batch_size = args.batch_size
     is_atari = args.is_atari
     epoch_length = args.epoch_length
+    l2_regularization = args.l2_regularization
 
     if args.device_token is None:
         device_token = "cuda" if torch.cuda.is_available() else "cpu"
@@ -255,6 +258,8 @@ def main():
     makedirs(best_models_path, exist_ok=True)
 
     env_names = sorted(envs.registry.env_specs.keys())
+    env_spec = envs.registry.env_specs[env_name]
+    goal_return = env_spec.reward_threshold
 
     if is_atari:
         env = wrap_deepmind(make_atari(env_name))
@@ -280,7 +285,8 @@ def main():
     dataset = EnvironmentsDataset(environments, model, n_steps, gamma, batch_size, preprocessor, device,
                                   epoch_length=epoch_length)
 
-    trainer = ActorCriticTrainer(args, model, model_id, trainer_id=1, writer=writer)
+    optimizer = Adam(model.parameters(), weight_decay=l2_regularization)
+    trainer = ActorCriticTrainer(args, model, model_id, trainer_id=1, writer=writer, optimizer=optimizer)
     eval_policy = Policy(model, preprocessor, device)
     trainer.fit(dataset, env, eval_policy)
 
