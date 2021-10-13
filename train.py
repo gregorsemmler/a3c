@@ -16,7 +16,7 @@ from torch.optim import Adam
 from torch.utils.tensorboard import SummaryWriter
 
 from atari_wrappers import make_atari, wrap_deepmind
-from data import EpisodeResult, EnvironmentsDataset
+from data import EpisodeResult, EnvironmentsDataset, default_action_selector, Policy
 from model import SimpleCNNPreProcessor, AtariModel, MLPModel, NoopPreProcessor
 from utils import save_checkpoint
 
@@ -38,6 +38,8 @@ class ActorCriticTrainer(object):
         self.entropy_factor = config.entropy_factor
         self.max_norm = config.max_norm
         self.lr = config.lr
+        self.gamma = config.gamma
+        self.num_eval_episodes = config.n_eval_episodes
 
         if config.device_token is None:
             device_token = "cuda" if torch.cuda.is_available() else "cpu"
@@ -78,7 +80,7 @@ class ActorCriticTrainer(object):
         path = join(self.checkpoint_path, filename)
         save_checkpoint(path, self.model, self.optimizer)
 
-    def fit(self, dataset_train, dataset_validate, num_epochs=10, training_seed=None):
+    def fit(self, dataset_train, eval_env, eval_policy, num_epochs=10, training_seed=None):
         if training_seed is not None:
             np.random.seed(training_seed)
             torch.backends.cudnn.deterministic = True
@@ -95,7 +97,8 @@ class ActorCriticTrainer(object):
             logger.info(f"{self.trainer_id}Training")
             self.train(dataset_train)
             logger.info(f"{self.trainer_id}Validation")
-            self.validate(dataset_validate)
+            # TODO keep track of average returns
+            self.play(eval_env, eval_policy, num_episodes=self.num_eval_episodes)
 
             if not self.batch_wise_scheduler:
                 self.scheduler_step()
@@ -167,13 +170,41 @@ class ActorCriticTrainer(object):
 
         return loss.item(), policy_loss.item(), value_loss.item(), entropy_loss.item()
 
-    def validate(self, dataset):
-        # TODO implement
-        pass
+    def play(self, env, policy, num_episodes=100, render=False):
+        # TODO allow multiple environments being played here?
+        # TODO add writer here
+        i = 0
+        best_return = float("-inf")
+        best_result = None
+        episode_returns = []
+        while i < num_episodes:
+            state = env.reset()
+            done = False
 
-    def validation_step(self, batch, batch_idx):
-        # TODO implement
-        pass
+            episode_result = EpisodeResult(env, state)
+            while not done:
+                if render:
+                    env.render()
+
+                action = int(policy(state))
+                new_state, reward, done, info = env.step(action)
+
+                episode_result.append(action, reward, new_state, done, info)
+
+                state = new_state
+
+            episode_return = episode_result.calculate_return(self.gamma)
+            if best_return < episode_return:
+                best_return = episode_return
+                best_result = episode_result
+                logger.info("New best return: {}".format(best_return))
+
+            episode_returns.append(episode_return)
+            i += 1
+
+            logger.info(f"Episode Length & Return: {len(episode_result.states)} {episode_return}")
+
+        return episode_returns, best_result, best_return
 
 
 def main():
@@ -189,11 +220,13 @@ def main():
     parser.add_argument("--entropy_factor", type=float, default=0.01)
     parser.add_argument("--max_norm", type=float, default=0.5)
     # parser.add_argument("--env_name", type=str, default="PongNoFrameskip-v4")
+    # parser.add_argument("--is_atari", type=bool, default=True)
     parser.add_argument("--env_name", type=str, default="CartPole-v0")
     parser.add_argument("--is_atari", type=bool, default=False)
     parser.add_argument("--device_token", default=None)
     parser.add_argument("--lr", type=float, default=1e-4)
-    parser.add_argument("--epoch_length", type=int, default=10000)
+    parser.add_argument("--epoch_length", type=int, default=1000)
+    parser.add_argument("--n_eval_episodes", type=int, default=1000)
     args = parser.parse_args()
 
     env_name = args.env_name
@@ -202,6 +235,7 @@ def main():
     gamma = args.gamma
     batch_size = args.batch_size
     is_atari = args.is_atari
+    epoch_length = args.epoch_length
 
     if args.device_token is None:
         device_token = "cuda" if torch.cuda.is_available() else "cpu"
@@ -243,10 +277,12 @@ def main():
         preprocessor = NoopPreProcessor()
         environments = [gym.make(env_name) for _ in range(env_count)]
 
-    dataset = EnvironmentsDataset(environments, model, n_steps, gamma, batch_size, preprocessor, device)
+    dataset = EnvironmentsDataset(environments, model, n_steps, gamma, batch_size, preprocessor, device,
+                                  epoch_length=epoch_length)
 
     trainer = ActorCriticTrainer(args, model, model_id, trainer_id=1, writer=writer)
-    trainer.fit(dataset, dataset)
+    eval_policy = Policy(model, preprocessor, device)
+    trainer.fit(dataset, env, eval_policy)
 
     print("")
 

@@ -16,6 +16,24 @@ def default_action_selector(probs):
     return Categorical(probs.detach().cpu()).sample()
 
 
+class Policy(object):
+
+    def __init__(self, model, preprocessor, device, action_selector=default_action_selector):
+        self.model = model
+        self.preprocessor = preprocessor
+        self.device = device
+        self.action_selector = action_selector
+
+    def __call__(self, state):
+        in_ts = self.preprocessor.preprocess(state).to(self.device)
+
+        with torch.no_grad():
+            log_probs_out, vals_out = self.model(in_ts)
+            probs_out = F.softmax(log_probs_out, dim=1)
+
+        return self.action_selector(probs_out)
+
+
 class EpisodeResult(object):
 
     def __init__(self, env, start_state, episode_id=None, chain=True):
@@ -143,7 +161,7 @@ class EnvironmentsDataset(object):
         self.n_steps = n_steps
         self.gamma = gamma
         self.batch_size = batch_size
-        self.prepocessor = preprocessor
+        self.preprocessor = preprocessor
         self.device = device
         self.action_selector = default_action_selector if action_selector is None else action_selector
         self.episode_results = {}
@@ -158,7 +176,7 @@ class EnvironmentsDataset(object):
             sorted_ers = sorted(self.episode_results.items())
             k_to_idx = {k: idx for idx, (k, v) in enumerate(sorted_ers)}
 
-            in_ts = torch.cat([self.prepocessor.preprocess(er.last_state) for k, er in sorted_ers]).to(self.device)
+            in_ts = torch.cat([self.preprocessor.preprocess(er.last_state) for k, er in sorted_ers]).to(self.device)
 
             with torch.no_grad():
                 log_probs_out, vals_out = self.model(in_ts)
@@ -178,14 +196,14 @@ class EnvironmentsDataset(object):
 
                 with torch.no_grad():
                     cur_in_ts = torch.cat(
-                        [self.prepocessor.preprocess(er.cur_state(self.n_steps)) for k, er in sorted_ers]).to(
+                        [self.preprocessor.preprocess(er.cur_state(self.n_steps)) for k, er in sorted_ers]).to(
                         self.device)
                     _, cur_vals_out = self.model(cur_in_ts)
 
                 advantages = [n_r - float(c_v) for n_r, c_v in zip(n_step_returns, cur_vals_out)]
 
                 for er, val, adv in zip(batch_ers, n_step_returns, advantages):
-                    batch.append(self.prepocessor.preprocess(er.cur_state(self.n_steps)), er.cur_action(self.n_steps),
+                    batch.append(self.preprocessor.preprocess(er.cur_state(self.n_steps)), er.cur_action(self.n_steps),
                                  float(val), float(adv))
 
                 for er in batch_ers:
