@@ -98,13 +98,15 @@ class EpisodeResult(object):
     def cur_action(self, n):
         return self.actions[self.n_step_idx(n)]
 
-    def update_offset(self, n):
+    def update_state(self, n, gamma=1.0):
         if not self.done:
             return
 
         self.get_offset += 1
         if self.get_offset >= n or not self.partial_unroll:
+            final_return = self.calculate_return(gamma)
             self.set_to_next_episode_result()
+            return final_return
 
     def begin_new_episode(self, episode_id=None, chain=True):
         self.next_episode_result = EpisodeResult(self.env, self.env.reset(), episode_id=episode_id, chain=chain)
@@ -171,6 +173,7 @@ class EnvironmentsDataset(object):
 
     def data(self):
         batch = ActorCriticBatch()
+        er_returns = []
         cur_batch_idx = 0
 
         while True:
@@ -208,10 +211,14 @@ class EnvironmentsDataset(object):
                                  float(val), float(adv))
 
                 for er in batch_ers:
-                    er.update_offset(self.n_steps)
+                    len_er = len(er)
+                    er_r = er.update_state(self.n_steps, gamma=self.gamma)
+                    if er_r is not None:
+                        er_returns.append((len_er, er_r))
 
                 if len(batch) >= self.batch_size:
                     yield batch  # TODO yield only part of batch if it's too big here
+                    # TODO yield er_returns
                     batch = ActorCriticBatch()
 
                     if self.epoch_length is not None:
