@@ -58,6 +58,7 @@ class ActorCriticTrainer(object):
         self.curr_epoch_idx = 0
         self.curr_train_batch_idx = 0
         self.curr_val_batch_idx = 0
+        self.curr_train_episode_idx = 0
         self.batch_wise_scheduler = batch_wise_scheduler
 
     def scheduler_step(self):
@@ -90,6 +91,7 @@ class ActorCriticTrainer(object):
         self.curr_epoch_idx = 0
         self.curr_train_batch_idx = 0
         self.curr_val_batch_idx = 0
+        self.curr_train_episode_idx = 0
 
         logger.info(f"{self.trainer_id}Starting Training For {num_epochs} epochs.")
         for _ in range(num_epochs):
@@ -112,17 +114,34 @@ class ActorCriticTrainer(object):
         ep_p_l = 0.0
         ep_v_l = 0.0
         ep_e_l = 0.0
+        ep_episode_length = 0.0
+        ep_episode_returns = 0.0
         count_batches = 0
+        count_episodes = 0
+        avg_ep_len = 0.0
+        avg_ep_ret = 0.0
 
-        for batch in dataset.data():
+        for er_returns, batch in dataset.data():
             b_l, p_l, v_l, e_l = self.training_step(batch, self.curr_train_batch_idx)
             self.writer.add_scalar(f"train_batch/{self.trainer_id}loss", b_l, self.curr_train_batch_idx)
             self.writer.add_scalar(f"train_batch/{self.trainer_id}policy_loss", p_l, self.curr_train_batch_idx)
             self.writer.add_scalar(f"train_batch/{self.trainer_id}value_loss", v_l, self.curr_train_batch_idx)
             self.writer.add_scalar(f"train_batch/{self.trainer_id}entropy_loss", e_l, self.curr_train_batch_idx)
 
+            for length, ret in er_returns:
+                self.writer.add_scalar(f"train_batch/{self.trainer_id}episode_length", length,
+                                       self.curr_train_episode_idx)
+                self.writer.add_scalar(f"train_batch/{self.trainer_id}episode_return", ret, self.curr_train_episode_idx)
+                ep_episode_length += length
+                ep_episode_returns += ret
+                self.curr_train_episode_idx += 1
+                count_episodes += 1
+                avg_ep_len = ep_episode_length / count_episodes
+                avg_ep_ret = ep_episode_returns / count_episodes
+
             logger.info(f"{self.trainer_id}Training - Epoch: {self.curr_epoch_idx} Batch: {self.curr_train_batch_idx}: "
-                        f"Loss: {b_l:.6f} Policy Loss: {p_l:.6f} Value Loss: {v_l:.6f} Entropy Loss: {e_l:.6f}")
+                        f"Loss: {b_l:.6f} Policy Loss: {p_l:.6f} Value Loss: {v_l:.6f} Entropy Loss: {e_l:.6f} "
+                        f"Avg. Ep Length: {avg_ep_len:.6f} Avg. Ep Return: {avg_ep_ret:.6f}")
             self.curr_train_batch_idx += 1
             count_batches += 1
             ep_l += b_l
@@ -134,13 +153,17 @@ class ActorCriticTrainer(object):
         ep_p_l /= max(1.0, count_batches)
         ep_v_l /= max(1.0, count_batches)
         ep_e_l /= max(1.0, count_batches)
+        ep_episode_length /= max(1.0, count_episodes)
+        ep_episode_returns /= max(1.0, count_episodes)
 
         self.writer.add_scalar(f"train_epoch/{self.trainer_id}loss", ep_l, self.curr_epoch_idx)
         self.writer.add_scalar(f"train_epoch/{self.trainer_id}policy_loss", ep_p_l, self.curr_epoch_idx)
         self.writer.add_scalar(f"train_epoch/{self.trainer_id}value_loss", ep_v_l, self.curr_epoch_idx)
-        self.writer.add_scalar(f"train_epoch/{self.trainer_id}entropy_loss", ep_e_l, self.curr_epoch_idx)
+        self.writer.add_scalar(f"train_epoch/{self.trainer_id}episode_length", ep_episode_length, self.curr_epoch_idx)
+        self.writer.add_scalar(f"train_epoch/{self.trainer_id}episode_return", ep_episode_returns, self.curr_epoch_idx)
         logger.info(f"{self.trainer_id}Training - Epoch {self.curr_epoch_idx}: Loss: {ep_l:.6f} "
-                    f"Policy Loss: {ep_p_l:.6f} Value Loss: {ep_v_l:.6f} Entropy Loss: {ep_e_l:.6f}")
+                    f"Policy Loss: {ep_p_l:.6f} Value Loss: {ep_v_l:.6f} Entropy Loss: {ep_e_l:.6f} "
+                    f"Episode Length: {ep_episode_length:.6f} Episode Return: {ep_episode_returns:.6f}")
 
     def training_step(self, batch, batch_idx):
         states_t = torch.cat(batch.states).to(self.device)
@@ -211,10 +234,10 @@ def main():
     logging.basicConfig(level=logging.INFO)
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--n_envs", type=int, default=100)
-    parser.add_argument("--n_steps", type=int, default=20)
+    parser.add_argument("--n_envs", type=int, default=50)
+    parser.add_argument("--n_steps", type=int, default=5)
     parser.add_argument("--gamma", type=float, default=0.99)
-    parser.add_argument("--batch_size", type=int, default=128)
+    parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--value_factor", type=float, default=0.5)
     parser.add_argument("--policy_factor", type=float, default=1.0)
     parser.add_argument("--entropy_factor", type=float, default=0.01)
@@ -225,8 +248,9 @@ def main():
     parser.add_argument("--is_atari", type=bool, default=False)
     parser.add_argument("--device_token", default=None)
     parser.add_argument("--lr", type=float, default=1e-4)
-    parser.add_argument("--epoch_length", type=int, default=10)
-    parser.add_argument("--n_eval_episodes", type=int, default=10)
+    parser.add_argument("--epoch_length", type=int, default=2000)
+    parser.add_argument("--n_eval_episodes", type=int, default=0)
+    parser.add_argument("--n_epochs", type=int, default=100)
     parser.add_argument("--l2_regularization", type=float, default=1e-4)
 
     args = parser.parse_args()
@@ -239,6 +263,7 @@ def main():
     is_atari = args.is_atari
     epoch_length = args.epoch_length
     l2_regularization = args.l2_regularization
+    num_epochs = args.n_epochs
 
     if args.device_token is None:
         device_token = "cuda" if torch.cuda.is_available() else "cpu"
@@ -288,7 +313,7 @@ def main():
     optimizer = Adam(model.parameters(), weight_decay=l2_regularization)
     trainer = ActorCriticTrainer(args, model, model_id, trainer_id=1, writer=writer, optimizer=optimizer)
     eval_policy = Policy(model, preprocessor, device)
-    trainer.fit(dataset, env, eval_policy)
+    trainer.fit(dataset, env, eval_policy, num_epochs=num_epochs)
 
     print("")
 

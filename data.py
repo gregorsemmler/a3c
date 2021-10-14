@@ -36,7 +36,7 @@ class Policy(object):
 
 class EpisodeResult(object):
 
-    def __init__(self, env, start_state, episode_id=None, chain=True, partial_unroll=True):
+    def __init__(self, env, start_state, episode_id=None, chain=True, partial_unroll=False):
         self.env = env
         self.states = [start_state]
         self.actions = []
@@ -136,17 +136,34 @@ class EpisodeResult(object):
 
 class ActorCriticBatch(object):
 
-    def __init__(self):
-        self.states = []
-        self.actions = []
-        self.values = []
-        self.advantages = []
+    def __init__(self, states=None, actions=None, values=None, advantages=None):
+        if states is None:
+            states = []
+        if actions is None:
+            actions = []
+        if values is None:
+            values = []
+        if advantages is None:
+            advantages = []
+        self.states = states
+        self.actions = actions
+        self.values = values
+        self.advantages = advantages
 
     def append(self, state, action, value, advantage):
         self.states.append(state)
         self.actions.append(action)
         self.values.append(value)
         self.advantages.append(advantage)
+
+    def get_batch(self, batch_size):
+        sub_batch = ActorCriticBatch(self.states[:batch_size], self.actions[:batch_size], self.values[:batch_size],
+                                     self.advantages[:batch_size])
+        self.states = self.states[batch_size:]
+        self.actions = self.actions[batch_size:]
+        self.values = self.values[batch_size:]
+        self.advantages = self.advantages[batch_size:]
+        return sub_batch
 
     def __len__(self):
         return len(self.states)
@@ -217,9 +234,9 @@ class EnvironmentsDataset(object):
                         er_returns.append((len_er, er_r))
 
                 if len(batch) >= self.batch_size:
-                    yield batch  # TODO yield only part of batch if it's too big here
-                    # TODO yield er_returns
-                    batch = ActorCriticBatch()
+                    yield er_returns, batch.get_batch(self.batch_size)
+
+                    er_returns = []
 
                     if self.epoch_length is not None:
                         cur_batch_idx += 1
