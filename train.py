@@ -178,8 +178,10 @@ class ActorCriticTrainer(object):
         values_t = torch.FloatTensor(np.array(batch.values)).to(self.device)
         advantages_t = torch.FloatTensor(np.array(batch.advantages)).to(self.device)
 
-        log_probs_out, value_out = self.model(states_t)
-        probs_out = F.softmax(log_probs_out, dim=1)
+        policy_out, value_out = self.model(states_t)
+
+        log_probs_out = F.log_softmax(policy_out, dim=1)
+        probs_out = F.softmax(policy_out, dim=1)
 
         value_loss = self.value_factor * F.mse_loss(value_out.squeeze(), values_t)
         policy_loss = advantages_t * log_probs_out[range(len(probs_out)), actions]
@@ -293,42 +295,44 @@ def main():
     env_spec = envs.registry.env_specs[env_name]
     goal_return = env_spec.reward_threshold
 
-    # if is_atari:
-    #     env = wrap_deepmind(make_atari(env_name))
-    #     state = env.reset()
-    #
-    #     preprocessor = SimpleCNNPreProcessor()
-    #     in_t = preprocessor.preprocess(state)
-    #     n_actions = env.action_space.n
-    #     input_shape = tuple(in_t.shape)[1:]
-    #     model = AtariModel(input_shape, n_actions).to(device)
-    #
-    #     environments = [wrap_deepmind(make_atari(env_name)) for _ in range(env_count)]
-    # else:
-    #     env = gym.make(env_name)
-    #     state = env.reset()
-    #     in_states = state.shape[0]
-    #     num_actions = env.action_space.n
-    #     model = MLPModel(in_states, num_actions).to(device)
-    #
-    #     preprocessor = NoopPreProcessor()
-    #     environments = [gym.make(env_name) for _ in range(env_count)]
+    if is_atari:
+        env = wrap_deepmind(make_atari(env_name))
+        state = env.reset()
+
+        preprocessor = SimpleCNNPreProcessor()
+        in_t = preprocessor.preprocess(state)
+        n_actions = env.action_space.n
+        input_shape = tuple(in_t.shape)[1:]
+        model = AtariModel(input_shape, n_actions).to(device)
+
+        environments = [wrap_deepmind(make_atari(env_name)) for _ in range(env_count)]
+    else:
+        env = gym.make(env_name)
+        state = env.reset()
+        in_states = state.shape[0]
+        num_actions = env.action_space.n
+        model = MLPModel(in_states, num_actions).to(device)
+
+        preprocessor = NoopPreProcessor()
+        environments = [gym.make(env_name) for _ in range(env_count)]
 
     # TODO testing
-    env = SimpleCorridorEnv()
-    state = env.reset()
-    in_states = state.shape[0]
-    num_actions = env.action_space.n
-    model = MLPModel(in_states, num_actions).to(device)
-
-    preprocessor = NoopPreProcessor()
-    environments = [SimpleCorridorEnv() for _ in range(env_count)]
+    # env = SimpleCorridorEnv()
+    # state = env.reset()
+    # in_states = state.shape[0]
+    # num_actions = env.action_space.n
+    # model = MLPModel(in_states, num_actions).to(device)
+    #
+    # preprocessor = NoopPreProcessor()
+    # environments = [SimpleCorridorEnv() for _ in range(env_count)]
     # TODO end of test
 
     dataset = EnvironmentsDataset(environments, model, n_steps, gamma, batch_size, preprocessor, device,
                                   epoch_length=epoch_length)
 
-    optimizer = Adam(model.parameters(), weight_decay=l2_regularization, eps=1e-3)
+    # optimizer = Adam(model.parameters(), weight_decay=l2_regularization, eps=1e-3)
+    # TODO
+    optimizer = Adam(model.parameters())
     trainer = ActorCriticTrainer(args, model, model_id, trainer_id=1, writer=writer, optimizer=optimizer)
     eval_policy = Policy(model, preprocessor, device)
     trainer.fit(dataset, env, eval_policy, num_epochs=num_epochs)
