@@ -17,6 +17,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 from atari_wrappers import make_atari, wrap_deepmind
 from data import EpisodeResult, EnvironmentsDataset, default_action_selector, Policy
+from envs import SimpleCorridorEnv
 from model import SimpleCNNPreProcessor, AtariModel, MLPModel, NoopPreProcessor
 from utils import save_checkpoint
 
@@ -118,8 +119,8 @@ class ActorCriticTrainer(object):
         ep_episode_returns = 0.0
         count_batches = 0
         count_episodes = 0
-        avg_ep_len = 0.0
-        avg_ep_ret = 0.0
+        batch_ep_len = 0.0
+        batch_ep_ret = 0.0
 
         for er_returns, batch in dataset.data():
             b_l, p_l, v_l, e_l = self.training_step(batch, self.curr_train_batch_idx)
@@ -127,6 +128,9 @@ class ActorCriticTrainer(object):
             self.writer.add_scalar(f"train_batch/{self.trainer_id}policy_loss", p_l, self.curr_train_batch_idx)
             self.writer.add_scalar(f"train_batch/{self.trainer_id}value_loss", v_l, self.curr_train_batch_idx)
             self.writer.add_scalar(f"train_batch/{self.trainer_id}entropy_loss", e_l, self.curr_train_batch_idx)
+
+            batch_ep_len = 0.0
+            batch_ep_ret = 0.0
 
             for length, ret in er_returns:
                 self.writer.add_scalar(f"train_batch/{self.trainer_id}episode_length", length,
@@ -136,12 +140,15 @@ class ActorCriticTrainer(object):
                 ep_episode_returns += ret
                 self.curr_train_episode_idx += 1
                 count_episodes += 1
-                avg_ep_len = ep_episode_length / count_episodes
-                avg_ep_ret = ep_episode_returns / count_episodes
+                batch_ep_len += length
+                batch_ep_ret += ret
+
+            batch_ep_len = 0.0 if len(er_returns) == 0.0 else batch_ep_len / len(er_returns)
+            batch_ep_ret = 0.0 if len(er_returns) == 0.0 else batch_ep_ret / len(er_returns)
 
             logger.info(f"{self.trainer_id}Training - Epoch: {self.curr_epoch_idx} Batch: {self.curr_train_batch_idx}: "
                         f"Loss: {b_l:.6f} Policy Loss: {p_l:.6f} Value Loss: {v_l:.6f} Entropy Loss: {e_l:.6f} "
-                        f"Avg. Ep Length: {avg_ep_len:.6f} Avg. Ep Return: {avg_ep_ret:.6f}")
+                        f"Ep Length: {batch_ep_len:.6f} Ep Return: {batch_ep_ret:.6f}")
             self.curr_train_batch_idx += 1
             count_batches += 1
             ep_l += b_l
@@ -247,7 +254,7 @@ def main():
     parser.add_argument("--env_name", type=str, default="CartPole-v0")
     parser.add_argument("--is_atari", type=bool, default=False)
     parser.add_argument("--device_token", default=None)
-    parser.add_argument("--lr", type=float, default=1e-4)
+    parser.add_argument("--lr", type=float, default=1e-6)
     parser.add_argument("--epoch_length", type=int, default=2000)
     parser.add_argument("--n_eval_episodes", type=int, default=0)
     parser.add_argument("--n_epochs", type=int, default=100)
@@ -286,31 +293,42 @@ def main():
     env_spec = envs.registry.env_specs[env_name]
     goal_return = env_spec.reward_threshold
 
-    if is_atari:
-        env = wrap_deepmind(make_atari(env_name))
-        state = env.reset()
+    # if is_atari:
+    #     env = wrap_deepmind(make_atari(env_name))
+    #     state = env.reset()
+    #
+    #     preprocessor = SimpleCNNPreProcessor()
+    #     in_t = preprocessor.preprocess(state)
+    #     n_actions = env.action_space.n
+    #     input_shape = tuple(in_t.shape)[1:]
+    #     model = AtariModel(input_shape, n_actions).to(device)
+    #
+    #     environments = [wrap_deepmind(make_atari(env_name)) for _ in range(env_count)]
+    # else:
+    #     env = gym.make(env_name)
+    #     state = env.reset()
+    #     in_states = state.shape[0]
+    #     num_actions = env.action_space.n
+    #     model = MLPModel(in_states, num_actions).to(device)
+    #
+    #     preprocessor = NoopPreProcessor()
+    #     environments = [gym.make(env_name) for _ in range(env_count)]
 
-        preprocessor = SimpleCNNPreProcessor()
-        in_t = preprocessor.preprocess(state)
-        n_actions = env.action_space.n
-        input_shape = tuple(in_t.shape)[1:]
-        model = AtariModel(input_shape, n_actions).to(device)
+    # TODO testing
+    env = SimpleCorridorEnv()
+    state = env.reset()
+    in_states = state.shape[0]
+    num_actions = env.action_space.n
+    model = MLPModel(in_states, num_actions).to(device)
 
-        environments = [wrap_deepmind(make_atari(env_name)) for _ in range(env_count)]
-    else:
-        env = gym.make(env_name)
-        state = env.reset()
-        in_states = state.shape[0]
-        num_actions = env.action_space.n
-        model = MLPModel(in_states, num_actions).to(device)
-
-        preprocessor = NoopPreProcessor()
-        environments = [gym.make(env_name) for _ in range(env_count)]
+    preprocessor = NoopPreProcessor()
+    environments = [SimpleCorridorEnv() for _ in range(env_count)]
+    # TODO end of test
 
     dataset = EnvironmentsDataset(environments, model, n_steps, gamma, batch_size, preprocessor, device,
                                   epoch_length=epoch_length)
 
-    optimizer = Adam(model.parameters(), weight_decay=l2_regularization)
+    optimizer = Adam(model.parameters(), weight_decay=l2_regularization, eps=1e-3)
     trainer = ActorCriticTrainer(args, model, model_id, trainer_id=1, writer=writer, optimizer=optimizer)
     eval_policy = Policy(model, preprocessor, device)
     trainer.fit(dataset, env, eval_policy, num_epochs=num_epochs)
