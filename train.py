@@ -168,9 +168,9 @@ class ActorCriticTrainer(object):
         self.writer.add_scalar(f"train_epoch/{self.trainer_id}value_loss", ep_v_l, self.curr_epoch_idx)
         self.writer.add_scalar(f"train_epoch/{self.trainer_id}episode_length", ep_episode_length, self.curr_epoch_idx)
         self.writer.add_scalar(f"train_epoch/{self.trainer_id}episode_return", ep_episode_returns, self.curr_epoch_idx)
-        logger.info(f"{self.trainer_id}Training - Epoch {self.curr_epoch_idx}: Loss: {ep_l:.6f} "
-                    f"Policy Loss: {ep_p_l:.6f} Value Loss: {ep_v_l:.6f} Entropy Loss: {ep_e_l:.6f} "
-                    f"Episode Length: {ep_episode_length:.6f} Episode Return: {ep_episode_returns:.6f}")
+        logger.info(f"{self.trainer_id}Training - Epoch {self.curr_epoch_idx}: Loss: {ep_l:.6g} "
+                    f"Policy Loss: {ep_p_l:.6g} Value Loss: {ep_v_l:.6g} Entropy Loss: {ep_e_l:.6g} "
+                    f"Episode Length: {ep_episode_length:.6g} Episode Return: {ep_episode_returns:.6g}")
 
     def training_step(self, batch, batch_idx):
         states_t = torch.cat(batch.states).to(self.device)
@@ -246,7 +246,7 @@ def main():
     parser.add_argument("--n_envs", type=int, default=50)
     parser.add_argument("--n_steps", type=int, default=5)
     parser.add_argument("--gamma", type=float, default=0.99)
-    parser.add_argument("--batch_size", type=int, default=32)
+    parser.add_argument("--batch_size", type=int, default=128)
     parser.add_argument("--value_factor", type=float, default=0.5)
     parser.add_argument("--policy_factor", type=float, default=1.0)
     parser.add_argument("--entropy_factor", type=float, default=0.01)
@@ -256,10 +256,12 @@ def main():
     parser.add_argument("--env_name", type=str, default="CartPole-v0")
     parser.add_argument("--is_atari", type=bool, default=False)
     parser.add_argument("--device_token", default=None)
-    parser.add_argument("--lr", type=float, default=1e-6)
+    parser.add_argument("--run_id", default=None)
+    parser.add_argument("--lr", type=float, default=1e-4)
+    parser.add_argument("--eps", type=float, default=1e-3)
     parser.add_argument("--epoch_length", type=int, default=2000)
     parser.add_argument("--n_eval_episodes", type=int, default=0)
-    parser.add_argument("--n_epochs", type=int, default=100)
+    parser.add_argument("--n_epochs", type=int, default=1000)
     parser.add_argument("--l2_regularization", type=float, default=1e-4)
 
     args = parser.parse_args()
@@ -272,7 +274,10 @@ def main():
     is_atari = args.is_atari
     epoch_length = args.epoch_length
     l2_regularization = args.l2_regularization
+    lr = args.lr
+    eps = args.eps
     num_epochs = args.n_epochs
+    run_id = args.run_id if args.run_id is not None else f"run_{datetime.now():%d%m%Y_%H%M%S}"
 
     if args.device_token is None:
         device_token = "cuda" if torch.cuda.is_available() else "cpu"
@@ -284,7 +289,6 @@ def main():
     checkpoint_path = "model_checkpoints"
     best_models_path = join(checkpoint_path, "best")
 
-    run_id = f"testrun_{datetime.now():%d%m%Y_%H%M%S}"
     model_id = f"{run_id}"
     writer = SummaryWriter(comment=f"-{run_id}")
 
@@ -330,9 +334,7 @@ def main():
     dataset = EnvironmentsDataset(environments, model, n_steps, gamma, batch_size, preprocessor, device,
                                   epoch_length=epoch_length)
 
-    # optimizer = Adam(model.parameters(), weight_decay=l2_regularization, eps=1e-3)
-    # TODO
-    optimizer = Adam(model.parameters())
+    optimizer = Adam(model.parameters(), lr=lr, weight_decay=l2_regularization, eps=eps)
     trainer = ActorCriticTrainer(args, model, model_id, trainer_id=1, writer=writer, optimizer=optimizer)
     eval_policy = Policy(model, preprocessor, device)
     trainer.fit(dataset, env, eval_policy, num_epochs=num_epochs)
