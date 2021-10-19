@@ -51,7 +51,7 @@ class DiscreteActorCriticModel(nn.Module):
 
 class MLPModel(DiscreteActorCriticModel):
 
-    def __init__(self, input_size, num_actions, fully_params=(8, 8)):
+    def __init__(self, input_size, num_actions, fully_params=(8, 8, 8)):
         super().__init__()
         self.n_actions = num_actions
         self.input_size = input_size

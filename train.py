@@ -33,7 +33,7 @@ class DummySummaryWriter(object):
 class ActorCriticTrainer(object):
 
     def __init__(self, config, model, model_id, trainer_id=None, optimizer=None, scheduler=None, checkpoint_path=None,
-                 writer=None, batch_wise_scheduler=False):
+                 writer=None, batch_wise_scheduler=False, num_mean_results=100):
         self.value_factor = config.value_factor
         self.policy_factor = config.policy_factor
         self.entropy_factor = config.entropy_factor
@@ -41,6 +41,7 @@ class ActorCriticTrainer(object):
         self.lr = config.lr
         self.gamma = config.gamma
         self.num_eval_episodes = config.n_eval_episodes
+        self.num_mean_results = num_mean_results
 
         if config.device_token is None:
             device_token = "cuda" if torch.cuda.is_available() else "cpu"
@@ -100,7 +101,7 @@ class ActorCriticTrainer(object):
             logger.info(f"{self.trainer_id}Training")
             self.train(dataset_train)
             logger.info(f"{self.trainer_id}Validation")
-            # TODO keep track of average returns
+
             self.play(eval_env, eval_policy, num_episodes=self.num_eval_episodes)
 
             if not self.batch_wise_scheduler:
@@ -121,6 +122,7 @@ class ActorCriticTrainer(object):
         count_episodes = 0
         batch_ep_len = 0.0
         batch_ep_ret = 0.0
+        last_returns = deque(maxlen=self.num_mean_results)
 
         for er_returns, batch in dataset.data():
             b_l, p_l, v_l, e_l = self.training_step(batch, self.curr_train_batch_idx)
@@ -142,13 +144,16 @@ class ActorCriticTrainer(object):
                 count_episodes += 1
                 batch_ep_len += length
                 batch_ep_ret += ret
+                last_returns.append(ret)
 
-            batch_ep_len = 0.0 if len(er_returns) == 0.0 else batch_ep_len / len(er_returns)
-            batch_ep_ret = 0.0 if len(er_returns) == 0.0 else batch_ep_ret / len(er_returns)
+            mean_returns = 0.0 if len(last_returns) == 0 else sum(last_returns) / len(last_returns)
+            batch_ep_len = 0.0 if len(er_returns) == 0 else batch_ep_len / len(er_returns)
+            batch_ep_ret = 0.0 if len(er_returns) == 0 else batch_ep_ret / len(er_returns)
 
             logger.info(f"{self.trainer_id}Training - Epoch: {self.curr_epoch_idx} Batch: {self.curr_train_batch_idx}: "
-                        f"Loss: {b_l:.6f} Policy Loss: {p_l:.6f} Value Loss: {v_l:.6f} Entropy Loss: {e_l:.6f} "
-                        f"Ep Length: {batch_ep_len:.6f} Ep Return: {batch_ep_ret:.6f}")
+                        f"{count_episodes} Episodes, Mean{self.num_mean_results} Returns: {mean_returns:.3g}, "
+                        f"Loss: {b_l:.5g} Policy Loss: {p_l:.5g} Value Loss: {v_l:.5g} Entropy Loss: {e_l:.3g} "
+                        f"Ep Length: {batch_ep_len:.2g} Ep Return: {batch_ep_ret:.2g}")
             self.curr_train_batch_idx += 1
             count_batches += 1
             ep_l += b_l
@@ -262,6 +267,7 @@ def main():
     parser.add_argument("--epoch_length", type=int, default=2000)
     parser.add_argument("--n_eval_episodes", type=int, default=0)
     parser.add_argument("--n_epochs", type=int, default=1000)
+    parser.add_argument("--n_mean_results", type=int, default=100)
     parser.add_argument("--l2_regularization", type=float, default=1e-4)
 
     args = parser.parse_args()
@@ -278,6 +284,7 @@ def main():
     eps = args.eps
     num_epochs = args.n_epochs
     run_id = args.run_id if args.run_id is not None else f"run_{datetime.now():%d%m%Y_%H%M%S}"
+    num_mean_results = args.n_mean_results
 
     if args.device_token is None:
         device_token = "cuda" if torch.cuda.is_available() else "cpu"
@@ -295,11 +302,20 @@ def main():
     makedirs(checkpoint_path, exist_ok=True)
     makedirs(best_models_path, exist_ok=True)
 
-    env_names = sorted(envs.registry.env_specs.keys())
-    env_spec = envs.registry.env_specs[env_name]
-    goal_return = env_spec.reward_threshold
+    # env_names = sorted(envs.registry.env_specs.keys())
+    # env_spec = envs.registry.env_specs[env_name]
+    # goal_return = env_spec.reward_threshold
 
-    if is_atari:
+    if env_name == "SimpleCorridor":
+        env = SimpleCorridorEnv()
+        state = env.reset()
+        in_states = state.shape[0]
+        num_actions = env.action_space.n
+        model = MLPModel(in_states, num_actions).to(device)
+
+        preprocessor = NoopPreProcessor()
+        environments = [SimpleCorridorEnv() for _ in range(env_count)]
+    elif is_atari:
         env = wrap_deepmind(make_atari(env_name))
         state = env.reset()
 
@@ -320,22 +336,12 @@ def main():
         preprocessor = NoopPreProcessor()
         environments = [gym.make(env_name) for _ in range(env_count)]
 
-    # TODO testing
-    # env = SimpleCorridorEnv()
-    # state = env.reset()
-    # in_states = state.shape[0]
-    # num_actions = env.action_space.n
-    # model = MLPModel(in_states, num_actions).to(device)
-    #
-    # preprocessor = NoopPreProcessor()
-    # environments = [SimpleCorridorEnv() for _ in range(env_count)]
-    # TODO end of test
-
     dataset = EnvironmentsDataset(environments, model, n_steps, gamma, batch_size, preprocessor, device,
                                   epoch_length=epoch_length)
 
     optimizer = Adam(model.parameters(), lr=lr, weight_decay=l2_regularization, eps=eps)
-    trainer = ActorCriticTrainer(args, model, model_id, trainer_id=1, writer=writer, optimizer=optimizer)
+    trainer = ActorCriticTrainer(args, model, model_id, trainer_id=1, writer=writer, optimizer=optimizer,
+                                 num_mean_results=num_mean_results)
     eval_policy = Policy(model, preprocessor, device)
     trainer.fit(dataset, env, eval_policy, num_epochs=num_epochs)
 
