@@ -33,7 +33,7 @@ class DummySummaryWriter(object):
 class ActorCriticTrainer(object):
 
     def __init__(self, config, model, model_id, trainer_id=None, optimizer=None, scheduler=None, checkpoint_path=None,
-                 writer=None, batch_wise_scheduler=False, num_mean_results=100):
+                 writer=None, batch_wise_scheduler=False, num_mean_results=100, target_mean_returns=None):
         self.value_factor = config.value_factor
         self.policy_factor = config.policy_factor
         self.entropy_factor = config.entropy_factor
@@ -42,6 +42,7 @@ class ActorCriticTrainer(object):
         self.gamma = config.gamma
         self.num_eval_episodes = config.n_eval_episodes
         self.num_mean_results = num_mean_results
+        self.target_mean_returns = target_mean_returns
 
         if config.device_token is None:
             device_token = "cuda" if torch.cuda.is_available() else "cpu"
@@ -61,7 +62,9 @@ class ActorCriticTrainer(object):
         self.curr_train_batch_idx = 0
         self.curr_val_batch_idx = 0
         self.curr_train_episode_idx = 0
+        self.count_episodes = 0
         self.batch_wise_scheduler = batch_wise_scheduler
+        self.target_reached = False
 
     def scheduler_step(self):
         if self.scheduler is not None:
@@ -75,15 +78,21 @@ class ActorCriticTrainer(object):
             log_idx = self.curr_train_batch_idx if self.batch_wise_scheduler else self.curr_epoch_idx
             self.writer.add_scalar(f"{log_prefix}/{self.trainer_id}lr", current_lr, log_idx)
 
-    def save_checkpoint(self):
+    def save_checkpoint(self, filename=None, best=False):
         if self.checkpoint_path is None:
             return
 
-        filename = f"{self.model_id}_{self.curr_epoch_idx:03d}.tar"
-        path = join(self.checkpoint_path, filename)
+        if filename is None:
+            filename = f"{self.model_id}_{self.curr_epoch_idx:03d}.tar"
+
+        if best:
+            path = join(self.checkpoint_path, "best", filename)
+        else:
+            path = join(self.checkpoint_path, filename)
+
         save_checkpoint(path, self.model, self.optimizer)
 
-    def fit(self, dataset_train, eval_env, eval_policy, num_epochs=10, training_seed=None):
+    def fit(self, dataset_train, eval_env, eval_policy, num_epochs=None, training_seed=None):
         if training_seed is not None:
             np.random.seed(training_seed)
             torch.backends.cudnn.deterministic = True
@@ -94,12 +103,24 @@ class ActorCriticTrainer(object):
         self.curr_train_batch_idx = 0
         self.curr_val_batch_idx = 0
         self.curr_train_episode_idx = 0
+        self.count_episodes = 0
+        self.target_reached = False
 
-        logger.info(f"{self.trainer_id}Starting Training For {num_epochs} epochs.")
-        for _ in range(num_epochs):
+        if num_epochs is None:
+            logger.info(f"{self.trainer_id}Starting training.")
+        else:
+            logger.info(f"{self.trainer_id}Starting training for {num_epochs} epochs.")
+
+        while num_epochs is None or self.curr_epoch_idx < num_epochs:
             logger.info(f"{self.trainer_id}Epoch {self.curr_epoch_idx}")
             logger.info(f"{self.trainer_id}Training")
             self.train(dataset_train)
+
+            if self.target_reached:
+                logger.info(f"Reached target mean returns. Ending training.")
+                self.save_checkpoint(best=True)
+                break
+
             logger.info(f"{self.trainer_id}Validation")
 
             self.play(eval_env, eval_policy, num_episodes=self.num_eval_episodes)
@@ -119,10 +140,10 @@ class ActorCriticTrainer(object):
         ep_episode_length = 0.0
         ep_episode_returns = 0.0
         count_batches = 0
-        count_episodes = 0
         batch_ep_len = 0.0
         batch_ep_ret = 0.0
         last_returns = deque(maxlen=self.num_mean_results)
+        count_epoch_episodes = 0
 
         for er_returns, batch in dataset.data():
             b_l, p_l, v_l, e_l = self.training_step(batch, self.curr_train_batch_idx)
@@ -141,7 +162,8 @@ class ActorCriticTrainer(object):
                 ep_episode_length += length
                 ep_episode_returns += ret
                 self.curr_train_episode_idx += 1
-                count_episodes += 1
+                self.count_episodes += 1
+                count_epoch_episodes += 1
                 batch_ep_len += length
                 batch_ep_ret += ret
                 last_returns.append(ret)
@@ -151,9 +173,10 @@ class ActorCriticTrainer(object):
             batch_ep_ret = 0.0 if len(er_returns) == 0 else batch_ep_ret / len(er_returns)
 
             logger.info(f"{self.trainer_id}Training - Epoch: {self.curr_epoch_idx} Batch: {self.curr_train_batch_idx}: "
-                        f"{count_episodes} Episodes, Mean{self.num_mean_results} Returns: {mean_returns:.3g}, "
+                        f"{self.count_episodes} Episodes, Mean{self.num_mean_results} Returns: {mean_returns:.3g}, "
                         f"Loss: {b_l:.5g} Policy Loss: {p_l:.5g} Value Loss: {v_l:.5g} Entropy Loss: {e_l:.3g} "
                         f"Ep Length: {batch_ep_len:.2g} Ep Return: {batch_ep_ret:.2g}")
+
             self.curr_train_batch_idx += 1
             count_batches += 1
             ep_l += b_l
@@ -161,12 +184,16 @@ class ActorCriticTrainer(object):
             ep_v_l += v_l
             ep_e_l += e_l
 
+            if self.target_mean_returns is not None and mean_returns >= self.target_mean_returns:
+                self.target_reached = True
+                break
+
         ep_l /= max(1.0, count_batches)
         ep_p_l /= max(1.0, count_batches)
         ep_v_l /= max(1.0, count_batches)
         ep_e_l /= max(1.0, count_batches)
-        ep_episode_length /= max(1.0, count_episodes)
-        ep_episode_returns /= max(1.0, count_episodes)
+        ep_episode_length /= max(1.0, count_epoch_episodes)
+        ep_episode_returns /= max(1.0, count_epoch_episodes)
 
         self.writer.add_scalar(f"train_epoch/{self.trainer_id}loss", ep_l, self.curr_epoch_idx)
         self.writer.add_scalar(f"train_epoch/{self.trainer_id}policy_loss", ep_p_l, self.curr_epoch_idx)
@@ -208,7 +235,6 @@ class ActorCriticTrainer(object):
         return loss.item(), policy_loss.item(), value_loss.item(), entropy_loss.item()
 
     def play(self, env, policy, num_episodes=100, render=False):
-        # TODO allow multiple environments being played here?
         # TODO add writer here
         i = 0
         best_return = float("-inf")
@@ -250,27 +276,28 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--n_envs", type=int, default=50)
     parser.add_argument("--n_steps", type=int, default=4)
-    parser.add_argument("--gamma", type=float, default=0.99)
+    parser.add_argument("--gamma", type=float, default=1.0)
     parser.add_argument("--batch_size", type=int, default=128)
-    # parser.add_argument("--batch_size", type=int, default=2)
+    parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--eps", type=float, default=1e-3)
+    parser.add_argument("--l2_regularization", type=float, default=0)
+    parser.add_argument("--epoch_length", type=int, default=2000)
+    parser.add_argument("--n_eval_episodes", type=int, default=0)
+    parser.add_argument("--n_epochs", type=int, default=-1)
+    parser.add_argument("--n_mean_results", type=int, default=100)
+    parser.add_argument("--target_mean_returns", default=None)
     parser.add_argument("--value_factor", type=float, default=1.0)
     parser.add_argument("--policy_factor", type=float, default=1.0)
     parser.add_argument("--entropy_factor", type=float, default=0.01)
     parser.add_argument("--max_norm", type=float, default=0.1)
+    parser.add_argument("--checkpoint_path", default=None)
     # parser.add_argument("--env_name", type=str, default="PongNoFrameskip-v4")
     # parser.add_argument("--is_atari", type=bool, default=True)
-    # parser.add_argument("--env_name", type=str, default="CartPole-v0")
-    parser.add_argument("--env_name", type=str, default="SimpleCorridor")
+    parser.add_argument("--env_name", type=str, default="CartPole-v0")
+    # parser.add_argument("--env_name", type=str, default="SimpleCorridor")
     parser.add_argument("--is_atari", type=bool, default=False)
     parser.add_argument("--device_token", default=None)
     parser.add_argument("--run_id", default=None)
-    parser.add_argument("--lr", type=float, default=1e-3)
-    parser.add_argument("--eps", type=float, default=1e-3)
-    parser.add_argument("--epoch_length", type=int, default=2000)
-    parser.add_argument("--n_eval_episodes", type=int, default=0)
-    parser.add_argument("--n_epochs", type=int, default=1000)
-    parser.add_argument("--n_mean_results", type=int, default=100)
-    parser.add_argument("--l2_regularization", type=float, default=0)
 
     args = parser.parse_args()
 
@@ -282,9 +309,12 @@ def main():
     is_atari = args.is_atari
     epoch_length = args.epoch_length
     l2_regularization = args.l2_regularization
+    tm = str(args.target_mean_returns)
+    target_mean_returns = int(tm) if tm.isdigit() else None
     lr = args.lr
     eps = args.eps
-    num_epochs = args.n_epochs
+    checkpoint_path = args.checkpoint_path
+    num_epochs = args.n_epochs if args.n_epochs > 0 else None
     run_id = args.run_id if args.run_id is not None else f"run_{datetime.now():%d%m%Y_%H%M%S}"
     num_mean_results = args.n_mean_results
 
@@ -295,18 +325,18 @@ def main():
 
     device = torch.device(device_token)
 
-    checkpoint_path = "model_checkpoints"
-    best_models_path = join(checkpoint_path, "best")
-
     model_id = f"{run_id}"
     writer = SummaryWriter(comment=f"-{run_id}")
 
-    makedirs(checkpoint_path, exist_ok=True)
-    makedirs(best_models_path, exist_ok=True)
+    if checkpoint_path is not None:
+        best_models_path = join(checkpoint_path, "best")
+        makedirs(checkpoint_path, exist_ok=True)
+        makedirs(best_models_path, exist_ok=True)
 
-    # env_names = sorted(envs.registry.env_specs.keys())
-    # env_spec = envs.registry.env_specs[env_name]
-    # goal_return = env_spec.reward_threshold
+    env_names = sorted(envs.registry.env_specs.keys())
+    if env_name in envs.registry.env_specs:
+        env_spec = envs.registry.env_specs[env_name]
+        goal_return = env_spec.reward_threshold
 
     if env_name == "SimpleCorridor":
         env = SimpleCorridorEnv()
@@ -343,7 +373,8 @@ def main():
 
     optimizer = Adam(model.parameters(), lr=lr, weight_decay=l2_regularization, eps=eps)
     trainer = ActorCriticTrainer(args, model, model_id, trainer_id=1, writer=writer, optimizer=optimizer,
-                                 num_mean_results=num_mean_results)
+                                 num_mean_results=num_mean_results, target_mean_returns=target_mean_returns,
+                                 checkpoint_path=checkpoint_path)
     eval_policy = Policy(model, preprocessor, device)
     trainer.fit(dataset, env, eval_policy, num_epochs=num_epochs)
 
