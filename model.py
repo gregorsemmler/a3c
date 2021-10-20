@@ -51,10 +51,11 @@ class DiscreteActorCriticModel(nn.Module):
 
 class MLPModel(DiscreteActorCriticModel):
 
-    def __init__(self, input_size, num_actions, fully_params=(8, 8, 8)):
+    def __init__(self, input_size, num_actions, fully_params=(64, 64), activation="relu"):
         super().__init__()
         self.n_actions = num_actions
         self.input_size = input_size
+        self.activation = activation
 
         policy_layers = []
         value_layers = []
@@ -62,9 +63,9 @@ class MLPModel(DiscreteActorCriticModel):
         prev_full_n = self.input_size
         for full_n in fully_params:
             policy_layers.append(nn.Linear(prev_full_n, full_n))
-            policy_layers.append(nn.ReLU(inplace=True))
+            policy_layers.append(self.get_activation())
             value_layers.append(nn.Linear(prev_full_n, full_n))
-            value_layers.append(nn.ReLU(inplace=True))
+            value_layers.append(self.get_activation())
             prev_full_n = full_n
 
         policy_layers.append(nn.Linear(prev_full_n, num_actions))
@@ -73,12 +74,67 @@ class MLPModel(DiscreteActorCriticModel):
         self.policy = nn.Sequential(*policy_layers)
         self.value = nn.Sequential(*value_layers)
 
+    def get_activation(self):
+        if self.activation == "relu":
+            return nn.ReLU(inplace=True)
+        elif self.activation == "elu":
+            return nn.ELU(inplace=True)
+        raise ValueError(f"Unknown Activation {self.activation}")
+
     @property
     def num_actions(self) -> int:
         return self.n_actions
 
     def forward(self, x):
         return self.policy(x), self.value(x)
+
+
+class SharedMLPModel(DiscreteActorCriticModel):
+
+    def __init__(self, input_size, num_actions, shared_params=(64, 64), head_params=(32, ), activation="elu"):
+        super().__init__()
+        self.n_actions = num_actions
+        self.input_size = input_size
+        self.activation = activation
+
+        shared_layers = []
+        policy_layers = []
+        value_layers = []
+
+        prev_full_n = self.input_size
+        for full_n in shared_params:
+            shared_layers.append(nn.Linear(prev_full_n, full_n))
+            shared_layers.append(self.get_activation())
+            prev_full_n = full_n
+
+        for full_n in head_params:
+            policy_layers.append(nn.Linear(prev_full_n, full_n))
+            policy_layers.append(self.get_activation())
+            value_layers.append(nn.Linear(prev_full_n, full_n))
+            value_layers.append(self.get_activation())
+            prev_full_n = full_n
+
+        policy_layers.append(nn.Linear(prev_full_n, num_actions))
+        value_layers.append(nn.Linear(prev_full_n, 1))
+
+        self.shared = nn.Sequential(*shared_layers)
+        self.policy = nn.Sequential(*policy_layers)
+        self.value = nn.Sequential(*value_layers)
+
+    def get_activation(self):
+        if self.activation == "relu":
+            return nn.ReLU(inplace=True)
+        elif self.activation == "elu":
+            return nn.ELU(inplace=True)
+        raise ValueError(f"Unknown Activation {self.activation}")
+
+    @property
+    def num_actions(self) -> int:
+        return self.n_actions
+
+    def forward(self, x):
+        shared_out = self.shared(x)
+        return self.policy(shared_out), self.value(shared_out)
 
 
 class AtariModel(DiscreteActorCriticModel):

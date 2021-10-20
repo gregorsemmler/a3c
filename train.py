@@ -18,7 +18,7 @@ from torch.utils.tensorboard import SummaryWriter
 from atari_wrappers import make_atari, wrap_deepmind
 from data import EpisodeResult, EnvironmentsDataset, default_action_selector, Policy
 from envs import SimpleCorridorEnv
-from model import SimpleCNNPreProcessor, AtariModel, MLPModel, NoopPreProcessor
+from model import SimpleCNNPreProcessor, AtariModel, MLPModel, NoopPreProcessor, SharedMLPModel
 from utils import save_checkpoint
 
 logger = logging.getLogger(__name__)
@@ -188,7 +188,7 @@ class ActorCriticTrainer(object):
         log_probs_out = F.log_softmax(policy_out, dim=1)
         probs_out = F.softmax(policy_out, dim=1)
 
-        value_loss = self.value_factor * F.mse_loss(value_out.squeeze(), values_t)
+        value_loss = self.value_factor * F.mse_loss(value_out.squeeze(-1), values_t)
         policy_loss = advantages_t * log_probs_out[range(len(probs_out)), actions]
         policy_loss = self.policy_factor * -policy_loss.mean()
         entropy_loss = self.entropy_factor * (probs_out * log_probs_out).sum(dim=1).mean()
@@ -249,26 +249,28 @@ def main():
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--n_envs", type=int, default=50)
-    parser.add_argument("--n_steps", type=int, default=5)
+    parser.add_argument("--n_steps", type=int, default=4)
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--batch_size", type=int, default=128)
-    parser.add_argument("--value_factor", type=float, default=0.5)
+    # parser.add_argument("--batch_size", type=int, default=2)
+    parser.add_argument("--value_factor", type=float, default=1.0)
     parser.add_argument("--policy_factor", type=float, default=1.0)
     parser.add_argument("--entropy_factor", type=float, default=0.01)
     parser.add_argument("--max_norm", type=float, default=0.1)
     # parser.add_argument("--env_name", type=str, default="PongNoFrameskip-v4")
     # parser.add_argument("--is_atari", type=bool, default=True)
-    parser.add_argument("--env_name", type=str, default="CartPole-v0")
+    # parser.add_argument("--env_name", type=str, default="CartPole-v0")
+    parser.add_argument("--env_name", type=str, default="SimpleCorridor")
     parser.add_argument("--is_atari", type=bool, default=False)
     parser.add_argument("--device_token", default=None)
     parser.add_argument("--run_id", default=None)
-    parser.add_argument("--lr", type=float, default=1e-4)
+    parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--eps", type=float, default=1e-3)
     parser.add_argument("--epoch_length", type=int, default=2000)
     parser.add_argument("--n_eval_episodes", type=int, default=0)
     parser.add_argument("--n_epochs", type=int, default=1000)
     parser.add_argument("--n_mean_results", type=int, default=100)
-    parser.add_argument("--l2_regularization", type=float, default=1e-4)
+    parser.add_argument("--l2_regularization", type=float, default=0)
 
     args = parser.parse_args()
 
@@ -311,7 +313,7 @@ def main():
         state = env.reset()
         in_states = state.shape[0]
         num_actions = env.action_space.n
-        model = MLPModel(in_states, num_actions).to(device)
+        model = SharedMLPModel(in_states, num_actions).to(device)
 
         preprocessor = NoopPreProcessor()
         environments = [SimpleCorridorEnv() for _ in range(env_count)]
@@ -331,7 +333,7 @@ def main():
         state = env.reset()
         in_states = state.shape[0]
         num_actions = env.action_space.n
-        model = MLPModel(in_states, num_actions).to(device)
+        model = SharedMLPModel(in_states, num_actions).to(device)
 
         preprocessor = NoopPreProcessor()
         environments = [gym.make(env_name) for _ in range(env_count)]
