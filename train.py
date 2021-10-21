@@ -65,6 +65,7 @@ class ActorCriticTrainer(object):
         self.count_episodes = 0
         self.batch_wise_scheduler = batch_wise_scheduler
         self.target_reached = False
+        self.last_returns = deque(maxlen=self.num_mean_results)
 
     def scheduler_step(self):
         if self.scheduler is not None:
@@ -105,6 +106,7 @@ class ActorCriticTrainer(object):
         self.curr_train_episode_idx = 0
         self.count_episodes = 0
         self.target_reached = False
+        self.last_returns.clear()
 
         if num_epochs is None:
             logger.info(f"{self.trainer_id}Starting training.")
@@ -142,7 +144,6 @@ class ActorCriticTrainer(object):
         count_batches = 0
         batch_ep_len = 0.0
         batch_ep_ret = 0.0
-        last_returns = deque(maxlen=self.num_mean_results)
         count_epoch_episodes = 0
 
         for er_returns, batch in dataset.data():
@@ -166,9 +167,9 @@ class ActorCriticTrainer(object):
                 count_epoch_episodes += 1
                 batch_ep_len += length
                 batch_ep_ret += ret
-                last_returns.append(ret)
+                self.last_returns.append(ret)
 
-            mean_returns = 0.0 if len(last_returns) == 0 else sum(last_returns) / len(last_returns)
+            mean_returns = 0.0 if len(self.last_returns) == 0 else sum(self.last_returns) / len(self.last_returns)
             batch_ep_len = 0.0 if len(er_returns) == 0 else batch_ep_len / len(er_returns)
             batch_ep_ret = 0.0 if len(er_returns) == 0 else batch_ep_ret / len(er_returns)
 
