@@ -1,6 +1,5 @@
 import argparse
 import logging
-import uuid
 from collections import deque
 from datetime import datetime
 from os import makedirs
@@ -16,9 +15,10 @@ from torch.optim import Adam
 from torch.utils.tensorboard import SummaryWriter
 
 from atari_wrappers import make_atari, wrap_deepmind
-from data import EpisodeResult, EnvironmentsDataset, default_action_selector, Policy
+from data import EnvironmentsDataset, Policy
 from envs import SimpleCorridorEnv
-from model import SimpleCNNPreProcessor, AtariModel, MLPModel, NoopPreProcessor, SharedMLPModel
+from model import SimpleCNNPreProcessor, AtariModel, NoopPreProcessor, SharedMLPModel
+from play import play_environment
 from utils import save_checkpoint
 
 logger = logging.getLogger(__name__)
@@ -121,9 +121,9 @@ class ActorCriticTrainer(object):
                 self.save_checkpoint(best=True)
                 break
 
-            logger.info(f"{self.trainer_id}Validation")
-
-            self.play(eval_env, eval_policy, num_episodes=self.num_eval_episodes)
+            if self.num_eval_episodes > 0:
+                logger.info(f"{self.trainer_id}Validation")
+                play_environment(eval_env, eval_policy, num_episodes=self.num_eval_episodes, gamma=self.gamma)
 
             if not self.batch_wise_scheduler:
                 self.scheduler_step()
@@ -233,41 +233,6 @@ class ActorCriticTrainer(object):
             self.scheduler_step()
 
         return loss.item(), policy_loss.item(), value_loss.item(), entropy_loss.item()
-
-    def play(self, env, policy, num_episodes=100, render=False):
-        # TODO add writer here
-        i = 0
-        best_return = float("-inf")
-        best_result = None
-        episode_returns = []
-        while i < num_episodes:
-            state = env.reset()
-            done = False
-
-            episode_result = EpisodeResult(env, state)
-            while not done:
-                if render:
-                    env.render()
-
-                action = int(policy(state))
-                new_state, reward, done, info = env.step(action)
-
-                episode_result.append(action, reward, new_state, done, info)
-
-                state = new_state
-
-            episode_return = episode_result.calculate_return(self.gamma)
-            if best_return < episode_return:
-                best_return = episode_return
-                best_result = episode_result
-                logger.info("New best return: {}".format(best_return))
-
-            episode_returns.append(episode_return)
-            logger.info(f"Episode {i} Length & Return: {len(episode_result.states)} {episode_return:.3f}")
-
-            i += 1
-
-        return episode_returns, best_result, best_return
 
 
 def main():
