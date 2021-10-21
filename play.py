@@ -1,7 +1,11 @@
 import argparse
 import logging
+import os
+from datetime import datetime
+from os.path import join
 
 import gym
+from gym.wrappers import Monitor
 import torch
 
 from atari_wrappers import wrap_deepmind, make_atari
@@ -14,11 +18,18 @@ from utils import load_checkpoint
 logger = logging.getLogger(__name__)
 
 
-def play_environment(env, policy, num_episodes=100, render=False, gamma=1.0):
+def play_environment(env, policy, num_episodes=100, render=False, gamma=1.0, video_save_path=None):
     i = 0
     best_return = float("-inf")
     best_result = None
     episode_returns = []
+
+    if video_save_path is not None:
+        sub_folder = f"{datetime.now():%d%m%Y_%H%M%S}"
+        sub_path = join(video_save_path, sub_folder)
+        os.makedirs(sub_path, exist_ok=True)
+        env = Monitor(env, sub_path, video_callable=lambda x: True, force=True)
+
     while i < num_episodes:
         state = env.reset()
         done = False
@@ -54,6 +65,7 @@ def evaluate_model():
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--model_path", required=True)
+    parser.add_argument("--video_path")
     parser.add_argument("--gamma", type=float, default=1.0)
     # parser.add_argument("--env_name", type=str, default="PongNoFrameskip-v4")
     # parser.add_argument("--is_atari", type=bool, default=True)
@@ -62,6 +74,7 @@ def evaluate_model():
     parser.add_argument("--is_atari", type=bool, default=False)
     parser.add_argument("--render", type=bool, default=True)
     parser.add_argument("--device_token", default=None)
+    parser.add_argument("--n_episodes", type=int, default=10)
 
     args = parser.parse_args()
 
@@ -70,6 +83,8 @@ def evaluate_model():
     model_path = args.model_path
     gamma = args.gamma
     render = args.render
+    video_path = args.video_path
+    num_episodes = args.n_episodes
 
     if args.device_token is None:
         device_token = "cuda" if torch.cuda.is_available() else "cpu"
@@ -113,7 +128,7 @@ def evaluate_model():
     policy = Policy(model, preprocessor, device)
 
     print("")
-    play_environment(env, policy, render=render, gamma=gamma)
+    play_environment(env, policy, num_episodes=num_episodes, render=render, gamma=gamma, video_save_path=video_path)
 
     print("")
     pass
