@@ -21,6 +21,7 @@ from model import SimpleCNNPreProcessor, AtariModel, NoopPreProcessor, SharedMLP
 from play import play_environment
 from utils import save_checkpoint
 
+
 logger = logging.getLogger(__name__)
 
 
@@ -30,10 +31,39 @@ class DummySummaryWriter(object):
         pass
 
 
+class ReturnScheduler(object):
+
+    def __init__(self, optimizer, milestones, factor=0.1):
+        self.optimizer = optimizer
+        self.milestones = np.sort(milestones)
+        self.begin_lr = self.get_lr()
+        self.factor = factor
+
+    def get_lr(self):
+        for param_group in self.optimizer.param_groups:
+            return param_group["lr"]
+
+    def set_lr(self, new_lr):
+        for g in self.optimizer.param_groups:
+            g["lr"] = new_lr
+
+    def step(self, returns):
+        idx = 0
+        for idx in range(len(self.milestones)):
+            if returns <= self.milestones[idx]:
+                break
+
+        if idx > 0:
+            new_lr = self.begin_lr * self.factor ** idx
+            self.set_lr(new_lr)
+        else:
+            self.set_lr(self.begin_lr)
+
+
 class ActorCriticTrainer(object):
 
     def __init__(self, config, model, model_id, trainer_id=None, optimizer=None, scheduler=None, checkpoint_path=None,
-                 writer=None, batch_wise_scheduler=False, num_mean_results=100, target_mean_returns=None):
+                 writer=None, batch_wise_scheduler=True, num_mean_results=100, target_mean_returns=None):
         self.value_factor = config.value_factor
         self.policy_factor = config.policy_factor
         self.entropy_factor = config.entropy_factor
@@ -67,14 +97,12 @@ class ActorCriticTrainer(object):
         self.target_reached = False
         self.last_returns = deque(maxlen=self.num_mean_results)
 
-    def scheduler_step(self):
+    def scheduler_step(self, metrics=None):
         if self.scheduler is not None:
-            current_lr = self.scheduler.optimizer.param_groups[0]["lr"]
+            current_lr = self.scheduler.get_lr()
 
-            try:
-                self.scheduler.step()
-            except UnboundLocalError as e:  # For catching OneCycleLR errors when stepping too often
-                return
+            self.scheduler.step(metrics)
+
             log_prefix = "batch" if self.batch_wise_scheduler else "epoch"
             log_idx = self.curr_train_batch_idx if self.batch_wise_scheduler else self.curr_epoch_idx
             self.writer.add_scalar(f"{log_prefix}/{self.trainer_id}lr", current_lr, log_idx)
@@ -132,6 +160,9 @@ class ActorCriticTrainer(object):
             self.curr_epoch_idx += 1
             self.save_checkpoint()
 
+    def get_mean_returns(self):
+        return 0.0 if len(self.last_returns) == 0 else sum(self.last_returns) / len(self.last_returns)
+
     def train(self, dataset):
         self.model.train()
 
@@ -169,7 +200,7 @@ class ActorCriticTrainer(object):
                 batch_ep_ret += ret
                 self.last_returns.append(ret)
 
-            mean_returns = 0.0 if len(self.last_returns) == 0 else sum(self.last_returns) / len(self.last_returns)
+            mean_returns = self.get_mean_returns()
             batch_ep_len = 0.0 if len(er_returns) == 0 else batch_ep_len / len(er_returns)
             batch_ep_ret = 0.0 if len(er_returns) == 0 else batch_ep_ret / len(er_returns)
 
@@ -231,7 +262,7 @@ class ActorCriticTrainer(object):
 
         self.optimizer.step()
         if self.batch_wise_scheduler:
-            self.scheduler_step()
+            self.scheduler_step(self.get_mean_returns())
 
         return loss.item(), policy_loss.item(), value_loss.item(), entropy_loss.item()
 
@@ -245,13 +276,16 @@ def main():
     parser.add_argument("--gamma", type=float, default=1.0)
     parser.add_argument("--batch_size", type=int, default=128)
     parser.add_argument("--lr", type=float, default=1e-3)
+    # parser.add_argument("--scheduler_returns", type=str)
+    parser.add_argument("--scheduler_returns", type=lambda s: [int(e) for e in s.split(",")])
+    parser.add_argument("--scheduler_factor", type=float, default=0.1)
     parser.add_argument("--eps", type=float, default=1e-3)
     parser.add_argument("--l2_regularization", type=float, default=0)
     parser.add_argument("--epoch_length", type=int, default=2000)
     parser.add_argument("--n_eval_episodes", type=int, default=0)
     parser.add_argument("--n_epochs", type=int, default=-1)
     parser.add_argument("--n_mean_results", type=int, default=100)
-    parser.add_argument("--target_mean_returns", default=None)
+    parser.add_argument("--target_mean_returns", type=int)
     parser.add_argument("--value_factor", type=float, default=1.0)
     parser.add_argument("--policy_factor", type=float, default=1.0)
     parser.add_argument("--entropy_factor", type=float, default=0.01)
@@ -275,8 +309,9 @@ def main():
     is_atari = args.is_atari
     epoch_length = args.epoch_length
     l2_regularization = args.l2_regularization
-    tm = str(args.target_mean_returns)
-    target_mean_returns = int(tm) if tm.isdigit() else None
+    target_mean_returns = args.target_mean_returns
+    scheduler_milestones = args.scheduler_returns
+    scheduler_factor = args.scheduler_factor
     lr = args.lr
     eps = args.eps
     checkpoint_path = args.checkpoint_path
@@ -338,9 +373,15 @@ def main():
                                   epoch_length=epoch_length)
 
     optimizer = Adam(model.parameters(), lr=lr, weight_decay=l2_regularization, eps=eps)
+
+    if scheduler_milestones is not None:
+        scheduler = ReturnScheduler(optimizer, scheduler_milestones, scheduler_factor)
+    else:
+        scheduler = None
+
     trainer = ActorCriticTrainer(args, model, model_id, trainer_id=1, writer=writer, optimizer=optimizer,
                                  num_mean_results=num_mean_results, target_mean_returns=target_mean_returns,
-                                 checkpoint_path=checkpoint_path)
+                                 checkpoint_path=checkpoint_path, scheduler=scheduler)
     eval_policy = Policy(model, preprocessor, device)
     trainer.fit(dataset, env, eval_policy, num_epochs=num_epochs)
 
