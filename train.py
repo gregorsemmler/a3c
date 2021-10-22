@@ -19,8 +19,7 @@ from data import EnvironmentsDataset, Policy
 from envs import SimpleCorridorEnv
 from model import SimpleCNNPreProcessor, AtariModel, NoopPreProcessor, SharedMLPModel
 from play import play_environment
-from utils import save_checkpoint
-
+from utils import save_checkpoint, load_checkpoint
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +62,8 @@ class ReturnScheduler(object):
 class ActorCriticTrainer(object):
 
     def __init__(self, config, model, model_id, trainer_id=None, optimizer=None, scheduler=None, checkpoint_path=None,
-                 writer=None, batch_wise_scheduler=True, num_mean_results=100, target_mean_returns=None):
+                 save_optimizer=False, writer=None, batch_wise_scheduler=True, num_mean_results=100,
+                 target_mean_returns=None):
         self.value_factor = config.value_factor
         self.policy_factor = config.policy_factor
         self.entropy_factor = config.entropy_factor
@@ -88,6 +88,7 @@ class ActorCriticTrainer(object):
 
         self.scheduler = scheduler
         self.checkpoint_path = checkpoint_path
+        self.save_optimizer = save_optimizer
         self.curr_epoch_idx = 0
         self.curr_train_batch_idx = 0
         self.curr_val_batch_idx = 0
@@ -119,7 +120,10 @@ class ActorCriticTrainer(object):
         else:
             path = join(self.checkpoint_path, filename)
 
-        save_checkpoint(path, self.model, self.optimizer)
+        if self.save_optimizer:
+            save_checkpoint(path, self.model, self.optimizer)
+        else:
+            save_checkpoint(path, self.model)
 
     def fit(self, dataset_train, eval_env, eval_policy, num_epochs=None, training_seed=None):
         if training_seed is not None:
@@ -207,7 +211,7 @@ class ActorCriticTrainer(object):
             logger.info(f"{self.trainer_id}Training - Epoch: {self.curr_epoch_idx} Batch: {self.curr_train_batch_idx}: "
                         f"{self.count_episodes} Episodes, Mean{self.num_mean_results} Returns: {mean_returns:.3g}, "
                         f"Loss: {b_l:.5g} Policy Loss: {p_l:.5g} Value Loss: {v_l:.5g} Entropy Loss: {e_l:.3g} "
-                        f"Ep Length: {batch_ep_len:.2g} Ep Return: {batch_ep_ret:.2g}")
+                        f"Ep Length: {batch_ep_len:.3g} Ep Return: {batch_ep_ret:.3g}")
 
             self.curr_train_batch_idx += 1
             count_batches += 1
@@ -291,6 +295,8 @@ def main():
     parser.add_argument("--entropy_factor", type=float, default=0.01)
     parser.add_argument("--max_norm", type=float, default=0.1)
     parser.add_argument("--checkpoint_path", default=None)
+    parser.add_argument("--save_optimizer", type=bool, default=False)
+    parser.add_argument("--pretrained_path", default=None)
     # parser.add_argument("--env_name", type=str, default="PongNoFrameskip-v4")
     # parser.add_argument("--is_atari", type=bool, default=True)
     parser.add_argument("--env_name", type=str, default="CartPole-v0")
@@ -318,6 +324,8 @@ def main():
     num_epochs = args.n_epochs if args.n_epochs > 0 else None
     run_id = args.run_id if args.run_id is not None else f"run_{datetime.now():%d%m%Y_%H%M%S}"
     num_mean_results = args.n_mean_results
+    pretrained_path = args.pretrained_path
+    save_optimizer = args.save_optimizer
 
     if args.device_token is None:
         device_token = "cuda" if torch.cuda.is_available() else "cpu"
@@ -356,7 +364,10 @@ def main():
         in_t = preprocessor.preprocess(state)
         n_actions = env.action_space.n
         input_shape = tuple(in_t.shape)[1:]
-        model = AtariModel(input_shape, n_actions).to(device)
+        # model = AtariModel(input_shape, n_actions).to(device)
+        # TODO test
+        model = AtariModel(input_shape, n_actions, conv_params=((32, 8, 4, 0), (64, 4, 2, 0), (64, 3, 1, 0)),
+                           fully_params=(512,)).to(device)
 
         environments = [wrap_deepmind(make_atari(env_name)) for _ in range(env_count)]
     else:
@@ -373,6 +384,12 @@ def main():
                                   epoch_length=epoch_length)
 
     optimizer = Adam(model.parameters(), lr=lr, weight_decay=l2_regularization, eps=eps)
+
+    if pretrained_path is not None:
+        if save_optimizer:
+            load_checkpoint(pretrained_path, model, optimizer=optimizer, device=device)
+        else:
+            load_checkpoint(pretrained_path, model, device=device)
 
     if scheduler_milestones is not None:
         scheduler = ReturnScheduler(optimizer, scheduler_milestones, scheduler_factor)
