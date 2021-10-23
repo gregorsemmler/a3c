@@ -36,7 +36,7 @@ class Policy(object):
 
 class EpisodeResult(object):
 
-    def __init__(self, env, start_state, episode_id=None, chain=True, partial_unroll=False):
+    def __init__(self, env, start_state, episode_id=None, chain=True, partial_unroll=True):
         self.env = env
         self.states = [start_state]
         self.actions = []
@@ -98,18 +98,24 @@ class EpisodeResult(object):
     def cur_action(self, n):
         return self.actions[self.n_step_idx(n)]
 
+    def get_final_return(self, gamma=1.0):
+        if not self.done:
+            return
+        return self.calculate_return(gamma)
+
     def update_state(self, n, gamma=1.0):
         if not self.done:
             return
 
         self.get_offset += 1
         if self.get_offset >= n or not self.partial_unroll:
-            final_return = self.calculate_return(gamma)
+            final_return = self.get_final_return(gamma)
             self.set_to_next_episode_result()
             return final_return
 
     def begin_new_episode(self, episode_id=None, chain=True):
-        self.next_episode_result = EpisodeResult(self.env, self.env.reset(), episode_id=episode_id, chain=chain)
+        self.next_episode_result = EpisodeResult(self.env, self.env.reset(), episode_id=episode_id, chain=chain,
+                                                 partial_unroll=self.partial_unroll)
 
     def set_to_next_episode_result(self):
         self.env = self.next_episode_result.env
@@ -171,8 +177,8 @@ class ActorCriticBatch(object):
 
 class EnvironmentsDataset(object):
 
-    def __init__(self, envs: Sequence[Env], model: DiscreteActorCriticModel, n_steps, gamma, batch_size, preprocessor, device,
-                 action_selector=None, epoch_length=None):
+    def __init__(self, envs: Sequence[Env], model: DiscreteActorCriticModel, n_steps, gamma, batch_size, preprocessor,
+                 device, action_selector=None, epoch_length=None, partial_unroll=True):
         self.envs = {idx: e for idx, e in enumerate(envs)}
         self.model = model
         self.num_actions = model.num_actions
@@ -186,6 +192,7 @@ class EnvironmentsDataset(object):
         self.action_selector = default_action_selector if action_selector is None else action_selector
         self.episode_results = {}
         self.epoch_length = epoch_length
+        self.partial_unroll = partial_unroll
         self.reset()
 
     def data(self):
@@ -227,11 +234,13 @@ class EnvironmentsDataset(object):
                     batch.append(self.preprocessor.preprocess(er.cur_state(self.n_steps)), er.cur_action(self.n_steps),
                                  float(val), float(adv))
 
+                er: EpisodeResult
                 for er in batch_ers:
                     len_er = len(er)
+                    er_r_ud = er.get_final_return()
                     er_r = er.update_state(self.n_steps, gamma=self.gamma)
                     if er_r is not None:
-                        er_returns.append((len_er, er_r))
+                        er_returns.append((len_er, er_r, er_r_ud))
 
                 if len(batch) >= self.batch_size:
                     yield er_returns, batch.get_batch(self.batch_size)
@@ -244,7 +253,8 @@ class EnvironmentsDataset(object):
                             return
 
     def reset(self):
-        self.episode_results = {k: EpisodeResult(e, e.reset()) for k, e in self.envs.items()}
+        self.episode_results = {k: EpisodeResult(e, e.reset(), partial_unroll=self.partial_unroll) for k, e in
+                                self.envs.items()}
 
     def step(self, actions):
         for (k, er), a in zip(sorted(self.episode_results.items()), actions):

@@ -70,6 +70,7 @@ class ActorCriticTrainer(object):
         self.max_norm = config.max_norm
         self.lr = config.lr
         self.gamma = config.gamma
+        self.undiscounted_log = config.undiscounted_log
         self.num_eval_episodes = config.n_eval_episodes
         self.num_mean_results = num_mean_results
         self.target_mean_returns = target_mean_returns
@@ -191,25 +192,26 @@ class ActorCriticTrainer(object):
             batch_ep_len = 0.0
             batch_ep_ret = 0.0
 
-            for length, ret in er_returns:
+            for length, ret, ret_u in er_returns:
+                ep_ret = ret_u if self.undiscounted_log else ret
                 self.writer.add_scalar(f"train_batch/{self.trainer_id}episode_length", length,
                                        self.curr_train_episode_idx)
-                self.writer.add_scalar(f"train_batch/{self.trainer_id}episode_return", ret, self.curr_train_episode_idx)
+                self.writer.add_scalar(f"train_batch/{self.trainer_id}episode_return", ep_ret, self.curr_train_episode_idx)
                 ep_episode_length += length
-                ep_episode_returns += ret
+                ep_episode_returns += ep_ret
                 self.curr_train_episode_idx += 1
                 self.count_episodes += 1
                 count_epoch_episodes += 1
                 batch_ep_len += length
-                batch_ep_ret += ret
-                self.last_returns.append(ret)
+                batch_ep_ret += ep_ret
+                self.last_returns.append(ep_ret)
 
             mean_returns = self.get_mean_returns()
             batch_ep_len = 0.0 if len(er_returns) == 0 else batch_ep_len / len(er_returns)
             batch_ep_ret = 0.0 if len(er_returns) == 0 else batch_ep_ret / len(er_returns)
 
             logger.info(f"{self.trainer_id}Training - Epoch: {self.curr_epoch_idx} Batch: {self.curr_train_batch_idx}: "
-                        f"{self.count_episodes} Episodes, Mean{self.num_mean_results} Returns: {mean_returns:.3g}, "
+                        f"{self.count_episodes} Episodes, Mean{self.num_mean_results} Returns: {mean_returns:.6g}, "
                         f"Loss: {b_l:.5g} Policy Loss: {p_l:.5g} Value Loss: {v_l:.5g} Entropy Loss: {e_l:.3g} "
                         f"Ep Length: {batch_ep_len:.3g} Ep Return: {batch_ep_ret:.3g}")
 
@@ -277,7 +279,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--n_envs", type=int, default=50)
     parser.add_argument("--n_steps", type=int, default=4)
-    parser.add_argument("--gamma", type=float, default=1.0)
+    parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--batch_size", type=int, default=128)
     parser.add_argument("--lr", type=float, default=1e-3)
     # parser.add_argument("--scheduler_returns", type=str)
@@ -290,6 +292,8 @@ def main():
     parser.add_argument("--n_epochs", type=int, default=-1)
     parser.add_argument("--n_mean_results", type=int, default=100)
     parser.add_argument("--target_mean_returns", type=int)
+    parser.add_argument("--undiscounted_log", type=bool, default=True)
+    parser.add_argument("--partial_unroll", type=bool, default=True)
     parser.add_argument("--value_factor", type=float, default=1.0)
     parser.add_argument("--policy_factor", type=float, default=1.0)
     parser.add_argument("--entropy_factor", type=float, default=0.01)
@@ -318,6 +322,7 @@ def main():
     target_mean_returns = args.target_mean_returns
     scheduler_milestones = args.scheduler_returns
     scheduler_factor = args.scheduler_factor
+    partial_unroll = args.partial_unroll
     lr = args.lr
     eps = args.eps
     checkpoint_path = args.checkpoint_path
@@ -381,7 +386,7 @@ def main():
         environments = [gym.make(env_name) for _ in range(env_count)]
 
     dataset = EnvironmentsDataset(environments, model, n_steps, gamma, batch_size, preprocessor, device,
-                                  epoch_length=epoch_length)
+                                  epoch_length=epoch_length, partial_unroll=partial_unroll)
 
     optimizer = Adam(model.parameters(), lr=lr, weight_decay=l2_regularization, eps=eps)
 
