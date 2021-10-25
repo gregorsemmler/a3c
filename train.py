@@ -19,7 +19,7 @@ from data import EnvironmentsDataset, Policy
 from envs import SimpleCorridorEnv
 from model import SimpleCNNPreProcessor, AtariModel, NoopPreProcessor, SharedMLPModel
 from play import play_environment
-from utils import save_checkpoint, load_checkpoint
+from utils import save_checkpoint, load_checkpoint, GracefulExit
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +63,7 @@ class ActorCriticTrainer(object):
 
     def __init__(self, config, model, model_id, trainer_id=None, optimizer=None, scheduler=None, checkpoint_path=None,
                  save_optimizer=False, writer=None, batch_wise_scheduler=True, num_mean_results=100,
-                 target_mean_returns=None):
+                 target_mean_returns=None, graceful_exiter: GracefulExit = None):
         self.value_factor = config.value_factor
         self.policy_factor = config.policy_factor
         self.entropy_factor = config.entropy_factor
@@ -98,6 +98,7 @@ class ActorCriticTrainer(object):
         self.batch_wise_scheduler = batch_wise_scheduler
         self.target_reached = False
         self.last_returns = deque(maxlen=self.num_mean_results)
+        self.graceful_exiter = graceful_exiter
 
     def scheduler_step(self, metrics=None):
         if self.scheduler is not None:
@@ -111,7 +112,7 @@ class ActorCriticTrainer(object):
 
     def save_checkpoint(self, filename=None, best=False):
         if self.checkpoint_path is None:
-            return
+            return None
 
         if filename is None:
             filename = f"{self.model_id}_{self.curr_epoch_idx:03d}.tar"
@@ -125,6 +126,7 @@ class ActorCriticTrainer(object):
             save_checkpoint(path, self.model, self.optimizer)
         else:
             save_checkpoint(path, self.model)
+        return path
 
     def fit(self, dataset_train, eval_env, eval_policy, num_epochs=None, training_seed=None):
         if training_seed is not None:
@@ -153,7 +155,17 @@ class ActorCriticTrainer(object):
 
             if self.target_reached:
                 logger.info(f"Reached target mean returns. Ending training.")
-                self.save_checkpoint(best=True)
+                save_path = self.save_checkpoint(best=True)
+                if save_path is not None:
+                    logger.info(f"Saved model to '{save_path}'")
+                break
+
+            if self.graceful_exiter is not None and not self.graceful_exiter.run:
+                filename = f"{self.model_id}_{datetime.now():%d%m%Y_%H%M%S}.tar"
+
+                save_path = self.save_checkpoint(filename)
+                if save_path is not None:
+                    logger.info(f"Saved model to '{save_path}'")
                 break
 
             if self.num_eval_episodes > 0:
@@ -228,6 +240,9 @@ class ActorCriticTrainer(object):
             if self.target_mean_returns is not None and mean_returns >= self.target_mean_returns \
                     and len(self.last_returns) >= self.num_mean_results:
                 self.target_reached = True
+                break
+
+            if self.graceful_exiter is not None and not self.graceful_exiter.run:
                 break
 
         ep_l /= max(1.0, count_batches)
@@ -310,7 +325,9 @@ def main():
     parser.add_argument("--no_partial_unroll", dest="partial_unroll", action="store_false")
     parser.add_argument("--atari", dest="atari", action="store_true")
     parser.add_argument("--no_atari", dest="atari", action="store_false")
-    parser.set_defaults(atari=True, partial_unroll=True)
+    parser.add_argument("--graceful_exit", dest="graceful_exit", action="store_true")
+    parser.add_argument("--no_graceful_exit", dest="graceful_exit", action="store_false")
+    parser.set_defaults(atari=True, partial_unroll=True, graceful_exit=True)
 
     args = parser.parse_args()
 
@@ -395,16 +412,17 @@ def main():
             load_checkpoint(pretrained_path, model, optimizer=optimizer, device=device)
         else:
             load_checkpoint(pretrained_path, model, device=device)
-        logger.info(f"Loaded model from {pretrained_path}")
+        logger.info(f"Loaded model from '{pretrained_path}'")
 
     if scheduler_milestones is not None:
         scheduler = ReturnScheduler(optimizer, scheduler_milestones, scheduler_factor)
     else:
         scheduler = None
 
+    graceful_exiter = GracefulExit() if args.graceful_exit else None
     trainer = ActorCriticTrainer(args, model, model_id, trainer_id=1, writer=writer, optimizer=optimizer,
                                  num_mean_results=num_mean_results, target_mean_returns=target_mean_returns,
-                                 checkpoint_path=checkpoint_path, scheduler=scheduler)
+                                 checkpoint_path=checkpoint_path, scheduler=scheduler, graceful_exiter=graceful_exiter)
     eval_policy = Policy(model, preprocessor, device)
     trainer.fit(dataset, env, eval_policy, num_epochs=num_epochs)
 
