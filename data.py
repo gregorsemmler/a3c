@@ -79,7 +79,7 @@ class EpisodeResult(object):
         return result
 
     def n_step_idx(self, n):
-        if self.chain and self.done:
+        if self.chain and self.done and self.partial_unroll:
             idx = n - self.get_offset
         else:
             idx = n
@@ -107,7 +107,8 @@ class EpisodeResult(object):
         if not self.done:
             return
 
-        self.get_offset += 1
+        if self.partial_unroll:
+            self.get_offset += 1
         if self.get_offset >= n or not self.partial_unroll:
             final_return = self.get_final_return(gamma)
             self.set_to_next_episode_result()
@@ -213,8 +214,8 @@ class EnvironmentsDataset(object):
             actions = self.action_selector(probs_out)
             self.step(actions)
 
-            to_train_ers = {k: er for k, er in self.episode_results.items() if
-                            (len(er) > self.n_steps) or len(er) <= self.n_steps and er.done}
+            to_train_ers = {k: er for k, er in sorted_ers if (len(er) > self.n_steps)
+                            or len(er) <= self.n_steps and er.done}
 
             if len(to_train_ers) > 0:
                 last_states_vals = [float(vals_out[k_to_idx[k]]) for k in to_train_ers.keys()]
@@ -224,8 +225,8 @@ class EnvironmentsDataset(object):
 
                 with torch.no_grad():
                     cur_in_ts = torch.cat(
-                        [self.preprocessor.preprocess(er.cur_state(self.n_steps)) for k, er in sorted_ers]).to(
-                        self.device)
+                        [self.preprocessor.preprocess(er.cur_state(self.n_steps)) for k, er in
+                         to_train_ers.items()]).to(self.device)
                     _, cur_vals_out = self.model(cur_in_ts)
 
                 advantages = [n_r - float(c_v) for n_r, c_v in zip(n_step_returns, cur_vals_out)]

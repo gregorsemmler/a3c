@@ -81,7 +81,7 @@ class ActorCriticTrainer(object):
             device_token = config.device_token
         self.device = torch.device(device_token)
 
-        self.trainer_id = "" if trainer_id is None else f"{trainer_id}_"
+        self.trainer_id = "" if trainer_id is None else str(trainer_id)
         self.model = model
         self.model_id = model_id
         self.optimizer = optimizer if optimizer is not None else Adam(model.parameters(), lr=self.lr)
@@ -107,7 +107,7 @@ class ActorCriticTrainer(object):
 
             log_prefix = "batch" if self.batch_wise_scheduler else "epoch"
             log_idx = self.curr_train_batch_idx if self.batch_wise_scheduler else self.curr_epoch_idx
-            self.writer.add_scalar(f"{log_prefix}/{self.trainer_id}lr", current_lr, log_idx)
+            self.writer.add_scalar(f"{log_prefix}/{self.trainer_id}/lr", current_lr, log_idx)
 
     def save_checkpoint(self, filename=None, best=False):
         if self.checkpoint_path is None:
@@ -142,13 +142,13 @@ class ActorCriticTrainer(object):
         self.last_returns.clear()
 
         if num_epochs is None:
-            logger.info(f"{self.trainer_id}Starting training.")
+            logger.info(f"{self.trainer_id}# Starting training.")
         else:
-            logger.info(f"{self.trainer_id}Starting training for {num_epochs} epochs.")
+            logger.info(f"{self.trainer_id}# Starting training for {num_epochs} epochs.")
 
         while num_epochs is None or self.curr_epoch_idx < num_epochs:
-            logger.info(f"{self.trainer_id}Epoch {self.curr_epoch_idx}")
-            logger.info(f"{self.trainer_id}Training")
+            logger.info(f"{self.trainer_id}# Epoch {self.curr_epoch_idx}")
+            logger.info(f"{self.trainer_id}# Training")
             self.train(dataset_train)
 
             if self.target_reached:
@@ -157,7 +157,7 @@ class ActorCriticTrainer(object):
                 break
 
             if self.num_eval_episodes > 0:
-                logger.info(f"{self.trainer_id}Validation")
+                logger.info(f"{self.trainer_id}# Validation")
                 play_environment(eval_env, eval_policy, num_episodes=self.num_eval_episodes, gamma=self.gamma)
 
             if not self.batch_wise_scheduler:
@@ -178,25 +178,24 @@ class ActorCriticTrainer(object):
         ep_episode_length = 0.0
         ep_episode_returns = 0.0
         count_batches = 0
-        batch_ep_len = 0.0
-        batch_ep_ret = 0.0
         count_epoch_episodes = 0
 
         for er_returns, batch in dataset.data():
             b_l, p_l, v_l, e_l = self.training_step(batch, self.curr_train_batch_idx)
-            self.writer.add_scalar(f"train_batch/{self.trainer_id}loss", b_l, self.curr_train_batch_idx)
-            self.writer.add_scalar(f"train_batch/{self.trainer_id}policy_loss", p_l, self.curr_train_batch_idx)
-            self.writer.add_scalar(f"train_batch/{self.trainer_id}value_loss", v_l, self.curr_train_batch_idx)
-            self.writer.add_scalar(f"train_batch/{self.trainer_id}entropy_loss", e_l, self.curr_train_batch_idx)
+            self.writer.add_scalar(f"train_batch/{self.trainer_id}/loss", b_l, self.curr_train_batch_idx)
+            self.writer.add_scalar(f"train_batch/{self.trainer_id}/policy_loss", p_l, self.curr_train_batch_idx)
+            self.writer.add_scalar(f"train_batch/{self.trainer_id}/value_loss", v_l, self.curr_train_batch_idx)
+            self.writer.add_scalar(f"train_batch/{self.trainer_id}/entropy_loss", e_l, self.curr_train_batch_idx)
 
             batch_ep_len = 0.0
             batch_ep_ret = 0.0
 
             for length, ret, ret_u in er_returns:
                 ep_ret = ret_u if self.undiscounted_log else ret
-                self.writer.add_scalar(f"train_batch/{self.trainer_id}episode_length", length,
+                self.writer.add_scalar(f"train_batch/{self.trainer_id}/episode_length", length,
                                        self.curr_train_episode_idx)
-                self.writer.add_scalar(f"train_batch/{self.trainer_id}episode_return", ep_ret, self.curr_train_episode_idx)
+                self.writer.add_scalar(f"train_batch/{self.trainer_id}/episode_return", ep_ret,
+                                       self.curr_train_episode_idx)
                 ep_episode_length += length
                 ep_episode_returns += ep_ret
                 self.curr_train_episode_idx += 1
@@ -207,13 +206,17 @@ class ActorCriticTrainer(object):
                 self.last_returns.append(ep_ret)
 
             mean_returns = self.get_mean_returns()
-            batch_ep_len = 0.0 if len(er_returns) == 0 else batch_ep_len / len(er_returns)  # TODO No log instead of 0.0
-            batch_ep_ret = 0.0 if len(er_returns) == 0 else batch_ep_ret / len(er_returns)
+            batch_ep_len = None if len(er_returns) == 0 else batch_ep_len / len(er_returns)
+            batch_ep_ret = None if len(er_returns) == 0 else batch_ep_ret / len(er_returns)
 
-            logger.info(f"{self.trainer_id}Training - Epoch: {self.curr_epoch_idx} Batch: {self.curr_train_batch_idx}: "
-                        f"{self.count_episodes} Episodes, Mean{self.num_mean_results} Returns: {mean_returns:.6g}, "
-                        f"Loss: {b_l:.5g} Policy Loss: {p_l:.5g} Value Loss: {v_l:.5g} Entropy Loss: {e_l:.3g} "
-                        f"Ep Length: {batch_ep_len:.5g} Ep Return: {batch_ep_ret:.5g}")
+            log_msg = f"{self.trainer_id}# Epoch: {self.curr_epoch_idx} Batch: {self.curr_train_batch_idx}: " \
+                      f"{self.count_episodes} Episodes, Mean{self.num_mean_results} Returns: {mean_returns:.6g}, " \
+                      f"Loss: {b_l:.5g} Policy Loss: {p_l:.5g} Value Loss: {v_l:.5g} Entropy Loss: {e_l:.3g} "
+
+            if batch_ep_len is not None:
+                log_msg += f"Ep Length: {batch_ep_len:.5g} Ep Return: {batch_ep_ret:.5g}"
+
+            logger.info(log_msg)
 
             self.curr_train_batch_idx += 1
             count_batches += 1
@@ -239,7 +242,7 @@ class ActorCriticTrainer(object):
         self.writer.add_scalar(f"train_epoch/{self.trainer_id}value_loss", ep_v_l, self.curr_epoch_idx)
         self.writer.add_scalar(f"train_epoch/{self.trainer_id}episode_length", ep_episode_length, self.curr_epoch_idx)
         self.writer.add_scalar(f"train_epoch/{self.trainer_id}episode_return", ep_episode_returns, self.curr_epoch_idx)
-        logger.info(f"{self.trainer_id}Training - Epoch {self.curr_epoch_idx}: Loss: {ep_l:.6g} "
+        logger.info(f"{self.trainer_id}# Epoch {self.curr_epoch_idx}: Loss: {ep_l:.6g} "
                     f"Policy Loss: {ep_p_l:.6g} Value Loss: {ep_v_l:.6g} Entropy Loss: {ep_e_l:.6g} "
                     f"Episode Length: {ep_episode_length:.6g} Episode Return: {ep_episode_returns:.6g}")
 
@@ -283,7 +286,6 @@ def main():
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--batch_size", type=int, default=128)
     parser.add_argument("--lr", type=float, default=1e-3)
-    # parser.add_argument("--scheduler_returns", type=str)
     parser.add_argument("--scheduler_returns", type=lambda s: [int(e) for e in s.split(",")])
     parser.add_argument("--scheduler_factor", type=float, default=0.1)
     parser.add_argument("--eps", type=float, default=1e-3)
@@ -294,7 +296,6 @@ def main():
     parser.add_argument("--n_mean_results", type=int, default=100)
     parser.add_argument("--target_mean_returns", type=float)
     parser.add_argument("--undiscounted_log", type=bool, default=True)
-    parser.add_argument("--partial_unroll", type=bool, default=True)
     parser.add_argument("--value_factor", type=float, default=1.0)
     parser.add_argument("--policy_factor", type=float, default=1.0)
     parser.add_argument("--entropy_factor", type=float, default=0.01)
@@ -302,13 +303,14 @@ def main():
     parser.add_argument("--checkpoint_path", default=None)
     parser.add_argument("--save_optimizer", type=bool, default=False)
     parser.add_argument("--pretrained_path", default=None)
-    # parser.add_argument("--env_name", type=str, default="PongNoFrameskip-v4")
-    # parser.add_argument("--is_atari", type=bool, default=True)
-    parser.add_argument("--env_name", type=str, default="CartPole-v0")
-    # parser.add_argument("--env_name", type=str, default="SimpleCorridor")
-    parser.add_argument("--is_atari", type=bool, default=False)
+    parser.add_argument("--env_name", type=str, default="PongNoFrameskip-v4")
     parser.add_argument("--device_token", default=None)
     parser.add_argument("--run_id", default=None)
+    parser.add_argument("--partial_unroll", dest="partial_unroll", action="store_true")
+    parser.add_argument("--no_partial_unroll", dest="partial_unroll", action="store_false")
+    parser.add_argument("--atari", dest="atari", action="store_true")
+    parser.add_argument("--no_atari", dest="atari", action="store_false")
+    parser.set_defaults(atari=True, partial_unroll=True)
 
     args = parser.parse_args()
 
@@ -317,7 +319,7 @@ def main():
     n_steps = args.n_steps
     gamma = args.gamma
     batch_size = args.batch_size
-    is_atari = args.is_atari
+    atari = args.atari
     epoch_length = args.epoch_length
     l2_regularization = args.l2_regularization
     target_mean_returns = args.target_mean_returns
@@ -362,7 +364,7 @@ def main():
 
         preprocessor = NoopPreProcessor()
         environments = [SimpleCorridorEnv() for _ in range(env_count)]
-    elif is_atari:
+    elif atari:
         env = wrap_deepmind(make_atari(env_name))
         state = env.reset()
 
@@ -371,9 +373,6 @@ def main():
         n_actions = env.action_space.n
         input_shape = tuple(in_t.shape)[1:]
         model = AtariModel(input_shape, n_actions).to(device)
-        # TODO test
-        # model = AtariModel(input_shape, n_actions, conv_params=((32, 8, 4, 0), (64, 4, 2, 0), (64, 3, 1, 0)),
-        #                    fully_params=(512,)).to(device)
 
         environments = [wrap_deepmind(make_atari(env_name)) for _ in range(env_count)]
     else:
