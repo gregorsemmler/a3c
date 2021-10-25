@@ -207,13 +207,13 @@ class ActorCriticTrainer(object):
                 self.last_returns.append(ep_ret)
 
             mean_returns = self.get_mean_returns()
-            batch_ep_len = 0.0 if len(er_returns) == 0 else batch_ep_len / len(er_returns)
+            batch_ep_len = 0.0 if len(er_returns) == 0 else batch_ep_len / len(er_returns)  # TODO No log instead of 0.0
             batch_ep_ret = 0.0 if len(er_returns) == 0 else batch_ep_ret / len(er_returns)
 
             logger.info(f"{self.trainer_id}Training - Epoch: {self.curr_epoch_idx} Batch: {self.curr_train_batch_idx}: "
                         f"{self.count_episodes} Episodes, Mean{self.num_mean_results} Returns: {mean_returns:.6g}, "
                         f"Loss: {b_l:.5g} Policy Loss: {p_l:.5g} Value Loss: {v_l:.5g} Entropy Loss: {e_l:.3g} "
-                        f"Ep Length: {batch_ep_len:.3g} Ep Return: {batch_ep_ret:.3g}")
+                        f"Ep Length: {batch_ep_len:.5g} Ep Return: {batch_ep_ret:.5g}")
 
             self.curr_train_batch_idx += 1
             count_batches += 1
@@ -222,7 +222,8 @@ class ActorCriticTrainer(object):
             ep_v_l += v_l
             ep_e_l += e_l
 
-            if self.target_mean_returns is not None and mean_returns >= self.target_mean_returns:
+            if self.target_mean_returns is not None and mean_returns >= self.target_mean_returns \
+                    and len(self.last_returns) >= self.num_mean_results:
                 self.target_reached = True
                 break
 
@@ -291,7 +292,7 @@ def main():
     parser.add_argument("--n_eval_episodes", type=int, default=0)
     parser.add_argument("--n_epochs", type=int, default=-1)
     parser.add_argument("--n_mean_results", type=int, default=100)
-    parser.add_argument("--target_mean_returns", type=int)
+    parser.add_argument("--target_mean_returns", type=float)
     parser.add_argument("--undiscounted_log", type=bool, default=True)
     parser.add_argument("--partial_unroll", type=bool, default=True)
     parser.add_argument("--value_factor", type=float, default=1.0)
@@ -369,10 +370,10 @@ def main():
         in_t = preprocessor.preprocess(state)
         n_actions = env.action_space.n
         input_shape = tuple(in_t.shape)[1:]
-        # model = AtariModel(input_shape, n_actions).to(device)
+        model = AtariModel(input_shape, n_actions).to(device)
         # TODO test
-        model = AtariModel(input_shape, n_actions, conv_params=((32, 8, 4, 0), (64, 4, 2, 0), (64, 3, 1, 0)),
-                           fully_params=(512,)).to(device)
+        # model = AtariModel(input_shape, n_actions, conv_params=((32, 8, 4, 0), (64, 4, 2, 0), (64, 3, 1, 0)),
+        #                    fully_params=(512,)).to(device)
 
         environments = [wrap_deepmind(make_atari(env_name)) for _ in range(env_count)]
     else:
@@ -395,6 +396,7 @@ def main():
             load_checkpoint(pretrained_path, model, optimizer=optimizer, device=device)
         else:
             load_checkpoint(pretrained_path, model, device=device)
+        logger.info(f"Loaded model from {pretrained_path}")
 
     if scheduler_milestones is not None:
         scheduler = ReturnScheduler(optimizer, scheduler_milestones, scheduler_factor)

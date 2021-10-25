@@ -87,13 +87,13 @@ class EpisodeResult(object):
 
     def n_step_stats(self, n):
         n_step_idx = self.n_step_idx(n)
-        cur_state = self.states[n_step_idx-1]
+        cur_state = self.cur_state(n)
         rewards = self.rewards[n_step_idx:]
         action = self.actions[n_step_idx]
         return cur_state, action, rewards
 
     def cur_state(self, n):
-        return self.states[self.n_step_idx(n)]
+        return self.states[max(self.n_step_idx(n) - 1, -len(self.states))]
 
     def cur_action(self, n):
         return self.actions[self.n_step_idx(n)]
@@ -207,8 +207,8 @@ class EnvironmentsDataset(object):
             in_ts = torch.cat([self.preprocessor.preprocess(er.last_state) for k, er in sorted_ers]).to(self.device)
 
             with torch.no_grad():
-                log_probs_out, vals_out = self.model(in_ts)
-                probs_out = F.softmax(log_probs_out, dim=1)
+                policy_out, vals_out = self.model(in_ts)
+                probs_out = F.softmax(policy_out, dim=1)
 
             actions = self.action_selector(probs_out)
             self.step(actions)

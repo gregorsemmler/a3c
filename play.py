@@ -110,7 +110,9 @@ def evaluate_model():
         in_t = preprocessor.preprocess(state)
         n_actions = env.action_space.n
         input_shape = tuple(in_t.shape)[1:]
-        model = AtariModel(input_shape, n_actions).to(device)
+        # model = AtariModel(input_shape, n_actions).to(device)
+        model = AtariModel(input_shape, n_actions, conv_params=((32, 8, 4, 0), (64, 4, 2, 0), (64, 3, 1, 0)),
+                           fully_params=(512,)).to(device)
 
         env = wrap_deepmind(make_atari(env_name))
     else:
