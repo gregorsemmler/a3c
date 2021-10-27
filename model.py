@@ -51,11 +51,12 @@ class ActorCriticModel(nn.Module):
 
 class MLPModel(ActorCriticModel):
 
-    def __init__(self, input_size, actions_dimension, fully_params=(64, 64), activation="relu"):
+    def __init__(self, input_size, action_dimension, discrete=True, fully_params=(64, 64), activation="relu"):
         super().__init__()
-        self.action_dim = actions_dimension
+        self.action_dim = action_dimension
         self.input_size = input_size
         self.activation = activation
+        self.discrete = discrete
 
         policy_layers = []
         value_layers = []
@@ -68,10 +69,11 @@ class MLPModel(ActorCriticModel):
             value_layers.append(self.get_activation())
             prev_full_n = full_n
 
-        policy_layers.append(nn.Linear(prev_full_n, actions_dimension))
         value_layers.append(nn.Linear(prev_full_n, 1))
 
-        self.policy = nn.Sequential(*policy_layers)
+        self.policy_shared = nn.Sequential(*policy_layers)
+        self.policy_mean = nn.Linear(prev_full_n, action_dimension)
+        self.policy_log_std = nn.Linear(prev_full_n, action_dimension) if not self.discrete else None
         self.value = nn.Sequential(*value_layers)
 
     def get_activation(self):
@@ -86,16 +88,21 @@ class MLPModel(ActorCriticModel):
         return self.action_dim
 
     def forward(self, x):
-        return self.policy(x), self.value(x)
+        if self.discrete:
+            return self.policy_mean(self.policy_shared(x)), self.value(x)
+        p_shared_out = self.policy_shared(x)
+        return (self.policy_mean(p_shared_out), self.policy_log_std(p_shared_out)), self.value(x)
 
 
 class SharedMLPModel(ActorCriticModel):
 
-    def __init__(self, input_size, action_dimension, shared_params=(64, 64), head_params=(32,), activation="elu"):
+    def __init__(self, input_size, action_dimension, discrete=True, shared_params=(64, 64), head_params=(32,),
+                 activation="elu"):
         super().__init__()
         self.action_dim = action_dimension
         self.input_size = input_size
         self.activation = activation
+        self.discrete = discrete
 
         shared_layers = []
         policy_layers = []
@@ -114,11 +121,12 @@ class SharedMLPModel(ActorCriticModel):
             value_layers.append(self.get_activation())
             prev_full_n = full_n
 
-        policy_layers.append(nn.Linear(prev_full_n, action_dimension))
         value_layers.append(nn.Linear(prev_full_n, 1))
 
         self.shared = nn.Sequential(*shared_layers)
-        self.policy = nn.Sequential(*policy_layers)
+        self.policy_shared = nn.Sequential(*policy_layers)
+        self.policy_mean = nn.Linear(prev_full_n, action_dimension)
+        self.policy_log_std = nn.Linear(prev_full_n, action_dimension) if not self.discrete else None
         self.value = nn.Sequential(*value_layers)
 
     def get_activation(self):
@@ -134,15 +142,20 @@ class SharedMLPModel(ActorCriticModel):
 
     def forward(self, x):
         shared_out = self.shared(x)
-        return self.policy(shared_out), self.value(shared_out)
+        p_shared_out = self.policy_shared(shared_out)
+        if self.discrete:
+            return self.policy_mean(p_shared_out), self.value(shared_out)
+        return (self.policy_mean(p_shared_out), self.policy_log_std(p_shared_out)), self.value(shared_out)
 
 
-class AtariModel(ActorCriticModel):
+class CNNModel(ActorCriticModel):
 
-    def __init__(self, input_shape, action_dimension, conv_params=((16, 8, 4, 0), (32, 4, 2, 0)), fully_params=(256,)):
+    def __init__(self, input_shape, action_dimension, discrete=True, conv_params=((16, 8, 4, 0), (32, 4, 2, 0)),
+                 fully_params=(256,)):
         super().__init__()
         self.input_shapes = input_shape
         self.action_dim = action_dimension
+        self.discrete = discrete
 
         prev_n_filters = self.input_shapes[0]
         conv_layers = []
@@ -154,24 +167,28 @@ class AtariModel(ActorCriticModel):
         self.conv = nn.Sequential(*conv_layers)
 
         _, prev_full_n = get_output_shape(self.conv, input_shape)
-        policy_full_layers = [nn.Flatten()]
-        value_full_layers = [nn.Flatten()]
+        policy_head_layers = [nn.Flatten()]
+        value_layers = [nn.Flatten()]
         for full_n in fully_params:
-            policy_full_layers.append(nn.Linear(prev_full_n, full_n))
-            policy_full_layers.append(nn.ReLU(inplace=True))
-            value_full_layers.append(nn.Linear(prev_full_n, full_n))
-            value_full_layers.append(nn.ReLU(inplace=True))
+            policy_head_layers.append(nn.Linear(prev_full_n, full_n))
+            policy_head_layers.append(nn.ReLU(inplace=True))
+            value_layers.append(nn.Linear(prev_full_n, full_n))
+            value_layers.append(nn.ReLU(inplace=True))
             prev_full_n = full_n
 
-        policy_full_layers.append(nn.Linear(prev_full_n, action_dimension))
-        value_full_layers.append(nn.Linear(prev_full_n, 1))
+        value_layers.append(nn.Linear(prev_full_n, 1))
 
-        self.policy_head = nn.Sequential(*policy_full_layers)
-        self.value_head = nn.Sequential(*value_full_layers)
+        self.policy_shared = nn.Sequential(*policy_head_layers)
+        self.policy_mean = nn.Linear(prev_full_n, action_dimension)
+        self.policy_log_std = nn.Linear(prev_full_n, action_dimension) if not self.discrete else None
+        self.value_head = nn.Sequential(*value_layers)
 
     def forward(self, x):
         conv_out = self.conv(x)
-        return self.policy_head(conv_out), self.value_head(conv_out)
+        policy_shared_out = self.policy_shared(conv_out)
+        if self.discrete:
+            return self.policy_mean(policy_shared_out), self.value_head(conv_out)
+        return (self.policy_mean(policy_shared_out), self.policy_log_std(policy_shared_out)), self.value_head(conv_out)
 
     @property
     def action_dimension(self) -> int:

@@ -18,7 +18,7 @@ from torch.utils.tensorboard import SummaryWriter
 from atari_wrappers import make_atari, wrap_deepmind
 from data import EnvironmentsDataset, Policy
 from envs import SimpleCorridorEnv
-from model import SimpleCNNPreProcessor, AtariModel, NoopPreProcessor, SharedMLPModel
+from model import SimpleCNNPreProcessor, CNNModel, NoopPreProcessor, SharedMLPModel
 from play import play_environment
 from utils import save_checkpoint, load_checkpoint, GracefulExit
 
@@ -394,22 +394,16 @@ def main():
 
         preprocessor = SimpleCNNPreProcessor()
         in_t = preprocessor.preprocess(state)
-        n_actions = env.action_dimension.n
+        n_actions = env.action_space.n
         input_shape = tuple(in_t.shape)[1:]
-        model = AtariModel(input_shape, n_actions).to(device)
+        model = CNNModel(input_shape, n_actions).to(device)
 
         environments = [wrap_deepmind(make_atari(env_name)) for _ in range(env_count)]
     else:
         env = gym.make(env_name)
         state = env.reset()
         in_states = state.shape[0]
-        num_actions = env.action_dimension.n
-
-        if isinstance(env.action_dimension, Discrete):
-            print("Discrete")
-        elif isinstance(env.action_dimension, Box):
-            print("Continuous")
-
+        num_actions = env.action_space.n
         model = SharedMLPModel(in_states, num_actions).to(device)
 
         preprocessor = NoopPreProcessor()

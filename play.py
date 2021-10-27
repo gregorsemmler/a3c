@@ -11,7 +11,7 @@ import torch
 from atari_wrappers import wrap_deepmind, make_atari
 from data import Policy, EpisodeResult
 from envs import SimpleCorridorEnv
-from model import SharedMLPModel, NoopPreProcessor, SimpleCNNPreProcessor, AtariModel
+from model import SharedMLPModel, NoopPreProcessor, SimpleCNNPreProcessor, CNNModel
 from utils import load_checkpoint
 
 
@@ -111,16 +111,16 @@ def evaluate_model():
 
         preprocessor = SimpleCNNPreProcessor()
         in_t = preprocessor.preprocess(state)
-        n_actions = env.action_dimension.n
+        n_actions = env.action_space.n
         input_shape = tuple(in_t.shape)[1:]
-        model = AtariModel(input_shape, n_actions).to(device)
+        model = CNNModel(input_shape, n_actions).to(device)
 
         env = wrap_deepmind(make_atari(env_name))
     else:
         env = gym.make(env_name)
         state = env.reset()
         in_states = state.shape[0]
-        num_actions = env.action_dimension.n
+        num_actions = env.action_space.n
         model = SharedMLPModel(in_states, num_actions).to(device)
 
         preprocessor = NoopPreProcessor()

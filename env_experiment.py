@@ -6,7 +6,7 @@ from gym import envs
 
 from atari_wrappers import wrap_deepmind, make_atari
 from data import EnvironmentsDataset
-from model import SimpleCNNPreProcessor, AtariModel
+from model import SimpleCNNPreProcessor, CNNModel
 
 
 def main():
@@ -28,10 +28,10 @@ def main():
     device_token = "cuda" if torch.cuda.is_available() else "cpu"
     device = torch.device(device_token)
 
-    n_actions = env.action_dimension.n
+    n_actions = env.action_space.n
     input_shape = tuple(in_t.shape)[1:]
     in_t = in_t.to(device)
-    model = AtariModel(input_shape, n_actions).to(device)
+    model = CNNModel(input_shape, n_actions).to(device)
     model.eval()
 
     with torch.no_grad():
