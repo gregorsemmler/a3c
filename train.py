@@ -11,6 +11,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from gym import envs
 import numpy as np
+from gym.spaces import Discrete, Box
 from torch.optim import Adam
 from torch.utils.tensorboard import SummaryWriter
 
@@ -261,6 +262,15 @@ class ActorCriticTrainer(object):
                     f"Policy Loss: {ep_p_l:.6g} Value Loss: {ep_v_l:.6g} Entropy Loss: {ep_e_l:.6g} "
                     f"Episode Length: {ep_episode_length:.6g} Episode Return: {ep_episode_returns:.6g}")
 
+    def calculate_policy_and_entropy_loss(self, actions, advantages, policy_out):
+        log_probs_out = F.log_softmax(policy_out, dim=1)
+        probs_out = F.softmax(policy_out, dim=1)
+
+        policy_loss = advantages * log_probs_out[range(len(probs_out)), actions]
+        policy_loss = self.policy_factor * -policy_loss.mean()
+        entropy_loss = self.entropy_factor * (probs_out * log_probs_out).sum(dim=1).mean()
+        return policy_loss, entropy_loss
+
     def training_step(self, batch, batch_idx):
         states_t = torch.cat(batch.states).to(self.device)
         actions = batch.actions
@@ -269,13 +279,9 @@ class ActorCriticTrainer(object):
 
         policy_out, value_out = self.model(states_t)
 
-        log_probs_out = F.log_softmax(policy_out, dim=1)
-        probs_out = F.softmax(policy_out, dim=1)
-
         value_loss = self.value_factor * F.mse_loss(value_out.squeeze(-1), values_t)
-        policy_loss = advantages_t * log_probs_out[range(len(probs_out)), actions]
-        policy_loss = self.policy_factor * -policy_loss.mean()
-        entropy_loss = self.entropy_factor * (probs_out * log_probs_out).sum(dim=1).mean()
+
+        policy_loss, entropy_loss = self.calculate_policy_and_entropy_loss(actions, advantages_t, policy_out)
 
         loss = entropy_loss + value_loss + policy_loss
 
@@ -310,7 +316,6 @@ def main():
     parser.add_argument("--n_epochs", type=int, default=-1)
     parser.add_argument("--n_mean_results", type=int, default=100)
     parser.add_argument("--target_mean_returns", type=float)
-    parser.add_argument("--undiscounted_log", type=bool, default=True)
     parser.add_argument("--value_factor", type=float, default=1.0)
     parser.add_argument("--policy_factor", type=float, default=1.0)
     parser.add_argument("--entropy_factor", type=float, default=0.01)
@@ -323,11 +328,13 @@ def main():
     parser.add_argument("--run_id", default=None)
     parser.add_argument("--partial_unroll", dest="partial_unroll", action="store_true")
     parser.add_argument("--no_partial_unroll", dest="partial_unroll", action="store_false")
+    parser.add_argument("--undiscounted_log", dest="undiscounted_log", action="store_true")
+    parser.add_argument("--no_undiscounted_log", dest="undiscounted_log", action="store_false")
     parser.add_argument("--atari", dest="atari", action="store_true")
     parser.add_argument("--no_atari", dest="atari", action="store_false")
     parser.add_argument("--graceful_exit", dest="graceful_exit", action="store_true")
     parser.add_argument("--no_graceful_exit", dest="graceful_exit", action="store_false")
-    parser.set_defaults(atari=True, partial_unroll=True, graceful_exit=True)
+    parser.set_defaults(atari=True, partial_unroll=True, graceful_exit=True, undiscounted_log=True)
 
     args = parser.parse_args()
 
@@ -387,7 +394,7 @@ def main():
 
         preprocessor = SimpleCNNPreProcessor()
         in_t = preprocessor.preprocess(state)
-        n_actions = env.action_space.n
+        n_actions = env.action_dimension.n
         input_shape = tuple(in_t.shape)[1:]
         model = AtariModel(input_shape, n_actions).to(device)
 
@@ -396,7 +403,13 @@ def main():
         env = gym.make(env_name)
         state = env.reset()
         in_states = state.shape[0]
-        num_actions = env.action_space.n
+        num_actions = env.action_dimension.n
+
+        if isinstance(env.action_dimension, Discrete):
+            print("Discrete")
+        elif isinstance(env.action_dimension, Box):
+            print("Continuous")
+
         model = SharedMLPModel(in_states, num_actions).to(device)
 
         preprocessor = NoopPreProcessor()

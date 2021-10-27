@@ -42,18 +42,18 @@ class NoopPreProcessor(PreProcessor):
         return torch.from_numpy(x[np.newaxis, :]).type(self.dtype)
 
 
-class DiscreteActorCriticModel(nn.Module):
+class ActorCriticModel(nn.Module):
 
     @property
-    def num_actions(self) -> int:
+    def action_dimension(self) -> int:
         raise NotImplementedError()
 
 
-class MLPModel(DiscreteActorCriticModel):
+class MLPModel(ActorCriticModel):
 
-    def __init__(self, input_size, num_actions, fully_params=(64, 64), activation="relu"):
+    def __init__(self, input_size, actions_dimension, fully_params=(64, 64), activation="relu"):
         super().__init__()
-        self.n_actions = num_actions
+        self.action_dim = actions_dimension
         self.input_size = input_size
         self.activation = activation
 
@@ -68,7 +68,7 @@ class MLPModel(DiscreteActorCriticModel):
             value_layers.append(self.get_activation())
             prev_full_n = full_n
 
-        policy_layers.append(nn.Linear(prev_full_n, num_actions))
+        policy_layers.append(nn.Linear(prev_full_n, actions_dimension))
         value_layers.append(nn.Linear(prev_full_n, 1))
 
         self.policy = nn.Sequential(*policy_layers)
@@ -82,18 +82,18 @@ class MLPModel(DiscreteActorCriticModel):
         raise ValueError(f"Unknown Activation {self.activation}")
 
     @property
-    def num_actions(self) -> int:
-        return self.n_actions
+    def action_dimension(self) -> int:
+        return self.action_dim
 
     def forward(self, x):
         return self.policy(x), self.value(x)
 
 
-class SharedMLPModel(DiscreteActorCriticModel):
+class SharedMLPModel(ActorCriticModel):
 
-    def __init__(self, input_size, num_actions, shared_params=(64, 64), head_params=(32, ), activation="elu"):
+    def __init__(self, input_size, action_dimension, shared_params=(64, 64), head_params=(32,), activation="elu"):
         super().__init__()
-        self.n_actions = num_actions
+        self.action_dim = action_dimension
         self.input_size = input_size
         self.activation = activation
 
@@ -114,7 +114,7 @@ class SharedMLPModel(DiscreteActorCriticModel):
             value_layers.append(self.get_activation())
             prev_full_n = full_n
 
-        policy_layers.append(nn.Linear(prev_full_n, num_actions))
+        policy_layers.append(nn.Linear(prev_full_n, action_dimension))
         value_layers.append(nn.Linear(prev_full_n, 1))
 
         self.shared = nn.Sequential(*shared_layers)
@@ -129,20 +129,20 @@ class SharedMLPModel(DiscreteActorCriticModel):
         raise ValueError(f"Unknown Activation {self.activation}")
 
     @property
-    def num_actions(self) -> int:
-        return self.n_actions
+    def action_dimension(self) -> int:
+        return self.action_dim
 
     def forward(self, x):
         shared_out = self.shared(x)
         return self.policy(shared_out), self.value(shared_out)
 
 
-class AtariModel(DiscreteActorCriticModel):
+class AtariModel(ActorCriticModel):
 
-    def __init__(self, input_shape, num_actions, conv_params=((16, 8, 4, 0), (32, 4, 2, 0)), fully_params=(256,)):
+    def __init__(self, input_shape, action_dimension, conv_params=((16, 8, 4, 0), (32, 4, 2, 0)), fully_params=(256,)):
         super().__init__()
         self.input_shapes = input_shape
-        self.n_actions = num_actions
+        self.action_dim = action_dimension
 
         prev_n_filters = self.input_shapes[0]
         conv_layers = []
@@ -163,7 +163,7 @@ class AtariModel(DiscreteActorCriticModel):
             value_full_layers.append(nn.ReLU(inplace=True))
             prev_full_n = full_n
 
-        policy_full_layers.append(nn.Linear(prev_full_n, num_actions))
+        policy_full_layers.append(nn.Linear(prev_full_n, action_dimension))
         value_full_layers.append(nn.Linear(prev_full_n, 1))
 
         self.policy_head = nn.Sequential(*policy_full_layers)
@@ -174,8 +174,8 @@ class AtariModel(DiscreteActorCriticModel):
         return self.policy_head(conv_out), self.value_head(conv_out)
 
     @property
-    def num_actions(self) -> int:
-        return self.n_actions
+    def action_dimension(self) -> int:
+        return self.action_dim
 
 
 class ResidualBlock(nn.Module):
@@ -209,15 +209,15 @@ class ResidualBlock(nn.Module):
         return out
 
 
-class ResidualModel(DiscreteActorCriticModel):
+class ResidualModel(ActorCriticModel):
 
-    def __init__(self, input_shape, num_filters, num_residual_blocks, val_hidden_size, num_actions):
+    def __init__(self, input_shape, num_filters, num_residual_blocks, val_hidden_size, action_dimension):
         super().__init__()
         self.input_shape = input_shape
         self.num_filters = num_filters
         self.num_residual_blocks = num_residual_blocks
         self.val_hidden_size = val_hidden_size
-        self.n_actions = num_actions
+        self.action_dim = action_dimension
         self.residual_tower = nn.Sequential(
             nn.Conv2d(self.input_shape[0], self.num_filters, kernel_size=3, stride=1, padding=1),
             nn.BatchNorm2d(self.num_filters),
@@ -236,7 +236,7 @@ class ResidualModel(DiscreteActorCriticModel):
         self.policy_head = nn.Sequential(
             self.policy_conv,
             nn.Flatten(),
-            nn.Linear(poly_conv_flat, self.n_actions)
+            nn.Linear(poly_conv_flat, self.action_dim)
         )
 
         self.val_conv = nn.Sequential(
@@ -254,8 +254,8 @@ class ResidualModel(DiscreteActorCriticModel):
         )
 
     @property
-    def num_actions(self) -> int:
-        return self.n_actions
+    def action_dimension(self) -> int:
+        return self.action_dim
 
     def forward(self, x):
         tower_out = self.residual_tower(x)

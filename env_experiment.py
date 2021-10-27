@@ -28,7 +28,7 @@ def main():
     device_token = "cuda" if torch.cuda.is_available() else "cpu"
     device = torch.device(device_token)
 
-    n_actions = env.action_space.n
+    n_actions = env.action_dimension.n
     input_shape = tuple(in_t.shape)[1:]
     in_t = in_t.to(device)
     model = AtariModel(input_shape, n_actions).to(device)

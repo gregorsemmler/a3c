@@ -7,7 +7,7 @@ import torch.nn.functional as F
 from gym import Env
 from torch.distributions import Categorical
 
-from model import DiscreteActorCriticModel
+from model import ActorCriticModel
 
 logger = logging.getLogger(__name__)
 
@@ -178,11 +178,11 @@ class ActorCriticBatch(object):
 
 class EnvironmentsDataset(object):
 
-    def __init__(self, envs: Sequence[Env], model: DiscreteActorCriticModel, n_steps, gamma, batch_size, preprocessor,
+    def __init__(self, envs: Sequence[Env], model: ActorCriticModel, n_steps, gamma, batch_size, preprocessor,
                  device, action_selector=None, epoch_length=None, partial_unroll=True):
         self.envs = {idx: e for idx, e in enumerate(envs)}
         self.model = model
-        self.num_actions = model.num_actions
+        self.num_actions = model.action_dimension
         if n_steps < 1:
             raise ValueError(f"Number of steps {n_steps} needs be greater or equal to 1")
         self.n_steps = n_steps
