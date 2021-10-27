@@ -1,5 +1,6 @@
 import logging
 import signal
+from gym.spaces import Discrete, Box
 
 import torch
 
@@ -27,6 +28,18 @@ def save_checkpoint(path, model, optimizer=None, model_id=None):
         CHECKPOINT_OPTIMIZER: optimizer.state_dict() if optimizer is not None else None,
         CHECKPOINT_MODEL_ID: model_id,
     }, path)
+
+
+def get_action_space_details(action_space):
+    if isinstance(action_space, Discrete):
+        discrete = True
+    elif isinstance(action_space, Box):
+        discrete = False
+    else:
+        raise ValueError("Unknown type of action_space")
+
+    action_dim = action_space.n if discrete else action_space.shape[0]
+    return discrete, action_dim
 
 
 class GracefulExit(object):

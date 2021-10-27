@@ -11,7 +11,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from gym import envs
 import numpy as np
-from gym.spaces import Discrete, Box
 from torch.optim import Adam
 from torch.utils.tensorboard import SummaryWriter
 
@@ -20,7 +19,7 @@ from data import EnvironmentsDataset, Policy
 from envs import SimpleCorridorEnv
 from model import SimpleCNNPreProcessor, CNNModel, NoopPreProcessor, SharedMLPModel
 from play import play_environment
-from utils import save_checkpoint, load_checkpoint, GracefulExit
+from utils import save_checkpoint, load_checkpoint, GracefulExit, get_action_space_details
 
 logger = logging.getLogger(__name__)
 
@@ -383,8 +382,8 @@ def main():
         env = SimpleCorridorEnv()
         state = env.reset()
         in_states = state.shape[0]
-        num_actions = env.action_space.n
-        model = SharedMLPModel(in_states, num_actions).to(device)
+        discrete, action_dim = get_action_space_details(env.action_space)
+        model = SharedMLPModel(in_states, action_dim, discrete=discrete).to(device)
 
         preprocessor = NoopPreProcessor()
         environments = [SimpleCorridorEnv() for _ in range(env_count)]
@@ -394,17 +393,17 @@ def main():
 
         preprocessor = SimpleCNNPreProcessor()
         in_t = preprocessor.preprocess(state)
-        n_actions = env.action_space.n
+        discrete, action_dim = get_action_space_details(env.action_space)
         input_shape = tuple(in_t.shape)[1:]
-        model = CNNModel(input_shape, n_actions).to(device)
+        model = CNNModel(input_shape, action_dim, discrete=discrete).to(device)
 
         environments = [wrap_deepmind(make_atari(env_name)) for _ in range(env_count)]
     else:
         env = gym.make(env_name)
         state = env.reset()
         in_states = state.shape[0]
-        num_actions = env.action_space.n
-        model = SharedMLPModel(in_states, num_actions).to(device)
+        discrete, action_dim = get_action_space_details(env.action_space)
+        model = SharedMLPModel(in_states, action_dim, discrete=discrete).to(device)
 
         preprocessor = NoopPreProcessor()
         environments = [gym.make(env_name) for _ in range(env_count)]
