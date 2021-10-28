@@ -48,6 +48,10 @@ class ActorCriticModel(nn.Module):
     def action_dimension(self) -> int:
         raise NotImplementedError()
 
+    @property
+    def is_discrete(self) -> bool:
+        raise NotImplementedError()
+
 
 class MLPModel(ActorCriticModel):
 
@@ -86,6 +90,10 @@ class MLPModel(ActorCriticModel):
     @property
     def action_dimension(self) -> int:
         return self.action_dim
+
+    @property
+    def is_discrete(self) -> bool:
+        return self.discrete
 
     def forward(self, x):
         if self.discrete:
@@ -139,6 +147,10 @@ class SharedMLPModel(ActorCriticModel):
     @property
     def action_dimension(self) -> int:
         return self.action_dim
+
+    @property
+    def is_discrete(self) -> bool:
+        return self.discrete
 
     def forward(self, x):
         shared_out = self.shared(x)
@@ -194,6 +206,10 @@ class CNNModel(ActorCriticModel):
     def action_dimension(self) -> int:
         return self.action_dim
 
+    @property
+    def is_discrete(self) -> bool:
+        return self.discrete
+
 
 class ResidualBlock(nn.Module):
 
@@ -228,13 +244,14 @@ class ResidualBlock(nn.Module):
 
 class ResidualModel(ActorCriticModel):
 
-    def __init__(self, input_shape, num_filters, num_residual_blocks, val_hidden_size, action_dimension):
+    def __init__(self, input_shape, num_filters, num_residual_blocks, val_hidden_size, action_dimension, discrete=True):
         super().__init__()
         self.input_shape = input_shape
         self.num_filters = num_filters
         self.num_residual_blocks = num_residual_blocks
         self.val_hidden_size = val_hidden_size
         self.action_dim = action_dimension
+        self.discrete = discrete
         self.residual_tower = nn.Sequential(
             nn.Conv2d(self.input_shape[0], self.num_filters, kernel_size=3, stride=1, padding=1),
             nn.BatchNorm2d(self.num_filters),
@@ -250,11 +267,12 @@ class ResidualModel(ActorCriticModel):
             nn.ReLU(inplace=True)
         )
         _, poly_conv_flat = get_output_shape(self.policy_conv, tower_out_shape)
-        self.policy_head = nn.Sequential(
+        self.policy_shared = nn.Sequential(
             self.policy_conv,
             nn.Flatten(),
-            nn.Linear(poly_conv_flat, self.action_dim)
         )
+        self.policy_mean = nn.Linear(poly_conv_flat, self.action_dim)
+        self.policy_log_std = nn.Linear(poly_conv_flat, self.action_dim) if not self.discrete else None
 
         self.val_conv = nn.Sequential(
             nn.Conv2d(self.num_filters, 1, kernel_size=1, stride=1),
@@ -274,6 +292,13 @@ class ResidualModel(ActorCriticModel):
     def action_dimension(self) -> int:
         return self.action_dim
 
+    @property
+    def is_discrete(self) -> bool:
+        return self.discrete
+
     def forward(self, x):
         tower_out = self.residual_tower(x)
-        return self.policy_head(tower_out), self.val_head(tower_out)
+        p_shared_out = self.policy_shared(tower_out)
+        if self.discrete:
+            return self.policy_mean(p_shared_out), self.val_head(tower_out)
+        return (self.policy_mean(p_shared_out), self.policy_log_std(p_shared_out)), self.val_head(tower_out)

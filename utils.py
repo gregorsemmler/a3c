@@ -39,7 +39,8 @@ def get_action_space_details(action_space):
         raise ValueError("Unknown type of action_space")
 
     action_dim = action_space.n if discrete else action_space.shape[0]
-    return discrete, action_dim
+    limits = None if discrete else (float(action_space.low), float(action_space.high))
+    return discrete, action_dim, limits
 
 
 class GracefulExit(object):

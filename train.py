@@ -1,5 +1,6 @@
 import argparse
 import logging
+import math
 from collections import deque
 from datetime import datetime
 from os import makedirs
@@ -86,6 +87,8 @@ class ActorCriticTrainer(object):
         self.model_id = model_id
         self.optimizer = optimizer if optimizer is not None else Adam(model.parameters(), lr=self.lr)
         self.writer = writer if writer is not None else DummySummaryWriter()
+
+        self.discrete = self.model.is_discrete
 
         self.scheduler = scheduler
         self.checkpoint_path = checkpoint_path
@@ -262,12 +265,24 @@ class ActorCriticTrainer(object):
                     f"Episode Length: {ep_episode_length:.6g} Episode Return: {ep_episode_returns:.6g}")
 
     def calculate_policy_and_entropy_loss(self, actions, advantages, policy_out):
-        log_probs_out = F.log_softmax(policy_out, dim=1)
-        probs_out = F.softmax(policy_out, dim=1)
+        if self.discrete:
+            log_probs_out = F.log_softmax(policy_out, dim=1)
+            probs_out = F.softmax(policy_out, dim=1)
 
-        policy_loss = advantages * log_probs_out[range(len(probs_out)), actions]
-        policy_loss = self.policy_factor * -policy_loss.mean()
-        entropy_loss = self.entropy_factor * (probs_out * log_probs_out).sum(dim=1).mean()
+            policy_loss = advantages * log_probs_out[range(len(probs_out)), actions]
+            policy_loss = self.policy_factor * -policy_loss.mean()
+            entropy_loss = self.entropy_factor * (probs_out * log_probs_out).sum(dim=1).mean()
+            return policy_loss, entropy_loss
+
+        mean, log_std = policy_out
+        variance = torch.exp(2 * log_std)
+
+        actions = torch.FloatTensor(np.array(actions)).to(self.device)
+        # Log of normal distribution:
+        log_probs = -((actions - mean) ** 2) / (2 * variance) - log_std - math.log(math.sqrt(2 * math.pi))
+        policy_loss = self.policy_factor * -(advantages * log_probs).mean()
+        # Entropy of normal distribution:
+        entropy_loss = self.entropy_factor * (0.5 + 0.5 * math.log(2 * math.pi) + log_std).mean()
         return policy_loss, entropy_loss
 
     def training_step(self, batch, batch_idx):
@@ -382,7 +397,7 @@ def main():
         env = SimpleCorridorEnv()
         state = env.reset()
         in_states = state.shape[0]
-        discrete, action_dim = get_action_space_details(env.action_space)
+        discrete, action_dim, limits = get_action_space_details(env.action_space)
         model = SharedMLPModel(in_states, action_dim, discrete=discrete).to(device)
 
         preprocessor = NoopPreProcessor()
@@ -393,7 +408,7 @@ def main():
 
         preprocessor = SimpleCNNPreProcessor()
         in_t = preprocessor.preprocess(state)
-        discrete, action_dim = get_action_space_details(env.action_space)
+        discrete, action_dim, limits = get_action_space_details(env.action_space)
         input_shape = tuple(in_t.shape)[1:]
         model = CNNModel(input_shape, action_dim, discrete=discrete).to(device)
 
@@ -402,14 +417,14 @@ def main():
         env = gym.make(env_name)
         state = env.reset()
         in_states = state.shape[0]
-        discrete, action_dim = get_action_space_details(env.action_space)
+        discrete, action_dim, limits = get_action_space_details(env.action_space)
         model = SharedMLPModel(in_states, action_dim, discrete=discrete).to(device)
 
         preprocessor = NoopPreProcessor()
         environments = [gym.make(env_name) for _ in range(env_count)]
 
     dataset = EnvironmentsDataset(environments, model, n_steps, gamma, batch_size, preprocessor, device,
-                                  epoch_length=epoch_length, partial_unroll=partial_unroll)
+                                  epoch_length=epoch_length, partial_unroll=partial_unroll, action_limits=limits)
 
     optimizer = Adam(model.parameters(), lr=lr, weight_decay=l2_regularization, eps=eps)
 
@@ -429,7 +444,7 @@ def main():
     trainer = ActorCriticTrainer(args, model, model_id, trainer_id=1, writer=writer, optimizer=optimizer,
                                  num_mean_results=num_mean_results, target_mean_returns=target_mean_returns,
                                  checkpoint_path=checkpoint_path, scheduler=scheduler, graceful_exiter=graceful_exiter)
-    eval_policy = Policy(model, preprocessor, device)
+    eval_policy = Policy(model, preprocessor, device, action_limits=limits)
     trainer.fit(dataset, env, eval_policy, num_epochs=num_epochs)
 
     print("")

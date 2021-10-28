@@ -121,6 +121,7 @@ def evaluate_model():
         state = env.reset()
         in_states = state.shape[0]
         num_actions = env.action_space.n
+        # TODO adapt for continuous action spaces
         model = SharedMLPModel(in_states, num_actions).to(device)
 
         preprocessor = NoopPreProcessor()
