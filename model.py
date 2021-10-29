@@ -157,6 +157,10 @@ class SharedMLPModel(ActorCriticModel):
         p_shared_out = self.policy_shared(shared_out)
         if self.discrete:
             return self.policy_mean(p_shared_out), self.value(shared_out)
+        # TODO test
+        # log_std = torch.tanh(self.policy_log_std(p_shared_out))
+        # mean = torch.tanh(self.policy_mean(p_shared_out))
+        # return (mean, log_std), self.value(shared_out)
         return (self.policy_mean(p_shared_out), self.policy_log_std(p_shared_out)), self.value(shared_out)
 
 

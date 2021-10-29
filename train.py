@@ -275,6 +275,26 @@ class ActorCriticTrainer(object):
             return policy_loss, entropy_loss
 
         mean, log_std = policy_out
+
+        # TODO test
+        def normal_kl_divergence(mu1, log_std1, mu2, log_std2):
+            var1 = torch.exp(2 * log_std1)
+            var2 = torch.exp(2 * log_std2)
+            return (log_std1 - log_std2 + ((var1 + (mu1 - mu2) ** 2) / (2 * var2)) - 0.5).mean()
+
+        # xxx = normal_kl_divergence(mean, log_std, mean, log_std)
+        # target_mean = torch.zeros_like(mean)
+        # target_log_std = torch.ones_like(log_std) * math.log(2)
+
+        # norm_diff_loss = normal_kl_divergence(mean, log_std, target_mean, target_log_std)
+        # norm_diff_loss = 0.5 * (F.mse_loss(target_mean, mean) + F.mse_loss(target_log_std, log_std))
+
+        # TODO test
+        log_std = torch.clamp(log_std, math.log(1e-8), math.log(2))
+        mean = torch.clamp(mean, -2, 2)
+        # log_std = F.tanh(log_std)
+        # mean = 2 * F.tanh(mean)
+        # TODO
         variance = torch.exp(2 * log_std)
 
         actions = torch.FloatTensor(np.array(actions)).to(self.device)
@@ -282,7 +302,10 @@ class ActorCriticTrainer(object):
         log_probs = -((actions - mean) ** 2) / (2 * variance) - log_std - math.log(math.sqrt(2 * math.pi))
         policy_loss = self.policy_factor * -(advantages * log_probs).mean()
         # Entropy of normal distribution:
-        entropy_loss = self.entropy_factor * (0.5 + 0.5 * math.log(2 * math.pi) + log_std).mean()
+        entropy_loss = self.entropy_factor * -(0.5 + 0.5 * math.log(2 * math.pi) + log_std).mean()
+
+        # TODO test
+        # policy_loss += norm_diff_loss
         return policy_loss, entropy_loss
 
     def training_step(self, batch, batch_idx):

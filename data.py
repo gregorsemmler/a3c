@@ -86,7 +86,7 @@ class EpisodeResult(object):
 
     def n_step_return(self, n, gamma, last_state_value):
         cur_state, action, rewards = self.n_step_stats(n)
-        result = 0.0 if self.done else last_state_value  # TODO recheck previous n>= len(self.states) condition here
+        result = 0.0 if self.done else last_state_value
         for r in reversed(rewards):
             result = r + gamma * result
         return result
