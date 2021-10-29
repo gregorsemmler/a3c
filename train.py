@@ -64,7 +64,7 @@ class ActorCriticTrainer(object):
 
     def __init__(self, config, model, model_id, trainer_id=None, optimizer=None, scheduler=None, checkpoint_path=None,
                  save_optimizer=False, writer=None, batch_wise_scheduler=True, num_mean_results=100,
-                 target_mean_returns=None, graceful_exiter: GracefulExit = None):
+                 target_mean_returns=None, graceful_exiter: GracefulExit = None, action_limits=None):
         self.value_factor = config.value_factor
         self.policy_factor = config.policy_factor
         self.entropy_factor = config.entropy_factor
@@ -89,6 +89,7 @@ class ActorCriticTrainer(object):
         self.writer = writer if writer is not None else DummySummaryWriter()
 
         self.discrete = self.model.is_discrete
+        self.action_limits = action_limits
 
         self.scheduler = scheduler
         self.checkpoint_path = checkpoint_path
@@ -276,25 +277,11 @@ class ActorCriticTrainer(object):
 
         mean, log_std = policy_out
 
-        # TODO test
-        def normal_kl_divergence(mu1, log_std1, mu2, log_std2):
-            var1 = torch.exp(2 * log_std1)
-            var2 = torch.exp(2 * log_std2)
-            return (log_std1 - log_std2 + ((var1 + (mu1 - mu2) ** 2) / (2 * var2)) - 0.5).mean()
+        if self.action_limits:
+            low, high = self.action_limits
+            mean = torch.clamp(mean, low, high)
+            log_std = torch.clamp(log_std, math.log(1e-5), 2 * math.log(high - low))
 
-        # xxx = normal_kl_divergence(mean, log_std, mean, log_std)
-        # target_mean = torch.zeros_like(mean)
-        # target_log_std = torch.ones_like(log_std) * math.log(2)
-
-        # norm_diff_loss = normal_kl_divergence(mean, log_std, target_mean, target_log_std)
-        # norm_diff_loss = 0.5 * (F.mse_loss(target_mean, mean) + F.mse_loss(target_log_std, log_std))
-
-        # TODO test
-        log_std = torch.clamp(log_std, math.log(1e-8), math.log(2))
-        mean = torch.clamp(mean, -2, 2)
-        # log_std = F.tanh(log_std)
-        # mean = 2 * F.tanh(mean)
-        # TODO
         variance = torch.exp(2 * log_std)
 
         actions = torch.FloatTensor(np.array(actions)).to(self.device)
@@ -302,10 +289,7 @@ class ActorCriticTrainer(object):
         log_probs = -((actions - mean) ** 2) / (2 * variance) - log_std - math.log(math.sqrt(2 * math.pi))
         policy_loss = self.policy_factor * -(advantages * log_probs).mean()
         # Entropy of normal distribution:
-        entropy_loss = self.entropy_factor * -(0.5 + 0.5 * math.log(2 * math.pi) + log_std).mean()
-
-        # TODO test
-        # policy_loss += norm_diff_loss
+        entropy_loss = self.entropy_factor * (0.5 + 0.5 * math.log(2 * math.pi) + log_std).mean()
         return policy_loss, entropy_loss
 
     def training_step(self, batch, batch_idx):
@@ -466,7 +450,7 @@ def main():
     graceful_exiter = GracefulExit() if args.graceful_exit else None
     trainer = ActorCriticTrainer(args, model, model_id, trainer_id=1, writer=writer, optimizer=optimizer,
                                  num_mean_results=num_mean_results, target_mean_returns=target_mean_returns,
-                                 checkpoint_path=checkpoint_path, scheduler=scheduler, graceful_exiter=graceful_exiter)
+                                 checkpoint_path=checkpoint_path, scheduler=scheduler, graceful_exiter=graceful_exiter, action_limits=limits)
     eval_policy = Policy(model, preprocessor, device, action_limits=limits)
     trainer.fit(dataset, env, eval_policy, num_epochs=num_epochs)
 

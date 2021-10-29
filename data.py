@@ -1,4 +1,5 @@
 import logging
+import math
 import uuid
 from typing import Sequence
 
@@ -21,6 +22,12 @@ def categorical_action_selector(policy_out, action_limits=None):
 
 def normal_action_selector(policy_out, action_limits=None):
     mean, log_std = policy_out
+
+    if action_limits is None:
+        low, high = action_limits
+        mean = torch.clamp(mean, low, high)
+        log_std = torch.clamp(log_std, math.log(1e-5), 2 * math.log(high - low))
+
     std_dev = torch.exp(log_std)
     actions = Normal(mean, std_dev).sample().detach().cpu().numpy()
     return actions if action_limits is None else np.clip(actions, action_limits[0], action_limits[1])
@@ -226,6 +233,7 @@ class EnvironmentsDataset(object):
 
             with torch.no_grad():
                 policy_out, vals_out = self.model(in_ts)
+
                 actions = self.action_selector(policy_out, self.action_limits)
 
             self.step(actions)
