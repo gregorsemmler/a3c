@@ -394,6 +394,7 @@ def main():
     logging.basicConfig(level=logging.INFO)
 
     parser = argparse.ArgumentParser()
+    parser.add_argument("--n_processes", type=int, default=1)
     parser.add_argument("--n_envs", type=int, default=50)
     parser.add_argument("--n_steps", type=int, default=4)
     parser.add_argument("--gamma", type=float, default=0.99)
@@ -421,6 +422,7 @@ def main():
     parser.add_argument("--env_name", type=str, default="PongNoFrameskip-v4")
     parser.add_argument("--device_token", default=None)
     parser.add_argument("--run_id", default=None)
+    parser.add_argument("--model_id", default=None)
     parser.add_argument("--log_frequency", type=int, default=1)
     parser.add_argument("--partial_unroll", dest="partial_unroll", action="store_true")
     parser.add_argument("--no_partial_unroll", dest="partial_unroll", action="store_false")
@@ -449,6 +451,7 @@ def main():
     num_epochs = args.n_epochs if args.n_epochs > 0 else None
     run_id = args.run_id if args.run_id is not None else f"run_{datetime.now():%d%m%Y_%H%M%S}"
     num_mean_results = args.n_mean_results
+    shared_model = args.shared_model
     pretrained_path = args.pretrained_path
 
     if args.device_token is None:
@@ -458,7 +461,7 @@ def main():
 
     device = torch.device(device_token)
 
-    model_id = f"{run_id}"
+    model_id = f"{run_id}" if args.model_id is None else args.model_id
     writer = SummaryWriter(comment=f"-{run_id}")
 
     if checkpoint_path is not None:
@@ -471,55 +474,102 @@ def main():
         env_spec = envs.registry.env_specs[env_name]
         goal_return = env_spec.reward_threshold
 
-    if env_name == "SimpleCorridor":
-        env = SimpleCorridorEnv()
-        state = env.reset()
-        in_states = state.shape[0]
-        discrete, action_dim, limits = get_action_space_details(env.action_space)
-        model = SharedMLPModel(in_states, action_dim, discrete=discrete).to(device)
-
-        preprocessor = NoopPreProcessor()
-        environments = [SimpleCorridorEnv() for _ in range(env_count)]
-    elif atari:
-        env = wrap_deepmind(make_atari(env_name))
-        state = env.reset()
-
-        preprocessor = SimpleCNNPreProcessor()
-        in_t = preprocessor.preprocess(state)
-        discrete, action_dim, limits = get_action_space_details(env.action_space)
-        input_shape = tuple(in_t.shape)[1:]
-        model = CNNModel(input_shape, action_dim, discrete=discrete).to(device)
-
-        environments = [wrap_deepmind(make_atari(env_name)) for _ in range(env_count)]
-    else:
-        env = gym.make(env_name)
-        state = env.reset()
-        in_states = state.shape[0]
-        discrete, action_dim, limits = get_action_space_details(env.action_space)
-        if args.shared_model:
-            model = SharedMLPModel(in_states, action_dim, discrete=discrete).to(device)
-        else:
-            model = MLPModel(in_states, action_dim, discrete=discrete).to(device)
-
-        preprocessor = NoopPreProcessor()
-        environments = [gym.make(env_name) for _ in range(env_count)]
-
-    dataset = EnvironmentsDataset(environments, model, n_steps, gamma, batch_size, preprocessor, device,
-                                  epoch_length=epoch_length, partial_unroll=partial_unroll, action_limits=limits)
+    model = get_model(env_name, shared_model, atari, device)
 
     if pretrained_path is not None:
         load_checkpoint(pretrained_path, model, device=device)
         logger.info(f"Loaded model from '{pretrained_path}'")
 
-    graceful_exiter = GracefulExit() if args.graceful_exit else None
     trainer_id = 1
+    training(args, model, trainer_id, writer, device)
+
+    # dataset = EnvironmentsDataset(environments, model, n_steps, gamma, batch_size, preprocessor, device,
+    #                               epoch_length=epoch_length, partial_unroll=partial_unroll, action_limits=limits)
+    #
+    # graceful_exiter = GracefulExit() if args.graceful_exit else None
+    # trainer_id = 1
+    # trainer = ActorCriticTrainer(args, model, model_id, trainer_id=trainer_id, writer=writer,
+    #                              num_mean_results=num_mean_results, target_mean_returns=target_mean_returns,
+    #                              checkpoint_path=checkpoint_path, graceful_exiter=graceful_exiter, action_limits=limits)
+    # eval_policy = Policy(model, preprocessor, device, action_limits=limits)
+    # trainer.fit(dataset, eval_env, eval_policy, num_epochs=num_epochs)
+
+    print("")
+
+
+def get_model(env_name, shared_model, atari, device):
+    if env_name == "SimpleCorridor":
+        eval_env = SimpleCorridorEnv()
+        state = eval_env.reset()
+        in_states = state.shape[0]
+        discrete, action_dim, limits = get_action_space_details(eval_env.action_space)
+        return SharedMLPModel(in_states, action_dim, discrete=discrete).to(device)
+    elif atari:
+        eval_env = wrap_deepmind(make_atari(env_name))
+        state = eval_env.reset()
+
+        preprocessor = SimpleCNNPreProcessor()
+        in_t = preprocessor.preprocess(state)
+        discrete, action_dim, limits = get_action_space_details(eval_env.action_space)
+        input_shape = tuple(in_t.shape)[1:]
+        return CNNModel(input_shape, action_dim, discrete=discrete).to(device)
+
+    eval_env = gym.make(env_name)
+    state = eval_env.reset()
+    in_states = state.shape[0]
+    discrete, action_dim, limits = get_action_space_details(eval_env.action_space)
+    if shared_model:
+        return SharedMLPModel(in_states, action_dim, discrete=discrete).to(device)
+    return MLPModel(in_states, action_dim, discrete=discrete).to(device)
+
+
+def get_preprocessor(env_name, atari):
+    if env_name == "SimpleCorridor":
+        return NoopPreProcessor()
+    elif atari:
+        return SimpleCNNPreProcessor()
+    return NoopPreProcessor()
+
+
+def get_environment(env_name, atari):
+    if env_name == "SimpleCorridor":
+        return SimpleCorridorEnv()
+    elif atari:
+        return wrap_deepmind(make_atari(env_name))
+    return gym.make(env_name)
+
+
+def training(args, model, trainer_id, writer, device):
+    env_name = args.env_name
+    env_count = args.n_envs
+    n_steps = args.n_steps
+    gamma = args.gamma
+    batch_size = args.batch_size
+    atari = args.atari
+    epoch_length = args.epoch_length
+    target_mean_returns = args.target_mean_returns
+    partial_unroll = args.partial_unroll
+    checkpoint_path = args.checkpoint_path
+    num_epochs = args.n_epochs if args.n_epochs > 0 else None
+    num_mean_results = args.n_mean_results
+    run_id = args.run_id if args.run_id is not None else f"run_{datetime.now():%d%m%Y_%H%M%S}"
+    model_id = f"{run_id}" if args.model_id is None else args.model_id
+
+    preprocessor = get_preprocessor(env_name, atari)
+    environments = [get_environment(env_name, atari) for _ in range(env_count)]
+
+    eval_env = get_environment(env_name, atari)
+    _, _, limits = get_action_space_details(eval_env.action_space)
+
+    dataset = EnvironmentsDataset(environments, model, n_steps, gamma, batch_size, preprocessor, device,
+                                  epoch_length=epoch_length, partial_unroll=partial_unroll, action_limits=limits)
+
+    graceful_exiter = GracefulExit() if args.graceful_exit else None
     trainer = ActorCriticTrainer(args, model, model_id, trainer_id=trainer_id, writer=writer,
                                  num_mean_results=num_mean_results, target_mean_returns=target_mean_returns,
                                  checkpoint_path=checkpoint_path, graceful_exiter=graceful_exiter, action_limits=limits)
     eval_policy = Policy(model, preprocessor, device, action_limits=limits)
-    trainer.fit(dataset, env, eval_policy, num_epochs=num_epochs)
-
-    print("")
+    trainer.fit(dataset, eval_env, eval_policy, num_epochs=num_epochs)
 
 
 if __name__ == "__main__":
