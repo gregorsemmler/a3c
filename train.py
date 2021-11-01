@@ -171,7 +171,7 @@ class ActorCriticTrainer(object):
             path = join(self.checkpoint_path, filename)
 
         if self.save_optimizer:
-            save_checkpoint(path, self.model, self.optimizer)
+            save_checkpoint(path, self.model, optimizer=self.optimizer, critic_optimizer=self.critic_optimizer)
         else:
             save_checkpoint(path, self.model)
         return path

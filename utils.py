@@ -10,22 +10,26 @@ logger = logging.getLogger(__name__)
 
 CHECKPOINT_MODEL = "model"
 CHECKPOINT_OPTIMIZER = "optimizer"
+CHECKPOINT_CRITIC_OPTIMIZER = "critic_optimizer"
 CHECKPOINT_MODEL_ID = "model_id"
 
 
-def load_checkpoint(path, model, optimizer=None, device="cpu"):
+def load_checkpoint(path, model, optimizer=None, critic_optimizer=None, device="cpu"):
     state = torch.load(path, map_location=device)
     model.load_state_dict(state[CHECKPOINT_MODEL])
     if optimizer is not None:
         optimizer.load_state_dict(state[CHECKPOINT_OPTIMIZER])
+    if critic_optimizer is not None:
+        critic_optimizer.load_state_dict(state[CHECKPOINT_CRITIC_OPTIMIZER])
     epoch = state.get(CHECKPOINT_MODEL_ID)
     return epoch
 
 
-def save_checkpoint(path, model, optimizer=None, model_id=None):
+def save_checkpoint(path, model, optimizer=None, critic_optimizer=None, model_id=None):
     torch.save({
         CHECKPOINT_MODEL: model.state_dict(),
         CHECKPOINT_OPTIMIZER: optimizer.state_dict() if optimizer is not None else None,
+        CHECKPOINT_CRITIC_OPTIMIZER: critic_optimizer.state_dict() if critic_optimizer is not None else None,
         CHECKPOINT_MODEL_ID: model_id,
     }, path)
 
