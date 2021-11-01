@@ -72,6 +72,7 @@ class ActorCriticTrainer(object):
         self.lr = config.lr
         self.gamma = config.gamma
         self.undiscounted_log = config.undiscounted_log
+        self.log_frequency = config.log_frequency
         self.num_eval_episodes = config.n_eval_episodes
         self.num_mean_results = num_mean_results
         self.target_mean_returns = target_mean_returns
@@ -225,14 +226,15 @@ class ActorCriticTrainer(object):
             batch_ep_len = None if len(er_returns) == 0 else batch_ep_len / len(er_returns)
             batch_ep_ret = None if len(er_returns) == 0 else batch_ep_ret / len(er_returns)
 
-            log_msg = f"{self.trainer_id}# Epoch: {self.curr_epoch_idx} Batch: {self.curr_train_batch_idx}: " \
-                      f"{self.count_episodes} Episodes, Mean{self.num_mean_results} Returns: {mean_returns:.6g}, " \
-                      f"Loss: {b_l:.5g} Policy Loss: {p_l:.5g} Value Loss: {v_l:.5g} Entropy Loss: {e_l:.3g} "
+            if self.curr_train_batch_idx % self.log_frequency == 0:
+                log_msg = f"{self.trainer_id}# Epoch: {self.curr_epoch_idx} Batch: {self.curr_train_batch_idx}: " \
+                          f"{self.count_episodes} Episodes, Mean{self.num_mean_results} Returns: {mean_returns:.6g}, " \
+                          f"Loss: {b_l:.5g} Policy Loss: {p_l:.5g} Value Loss: {v_l:.5g} Entropy Loss: {e_l:.3g} "
 
-            if batch_ep_len is not None:
-                log_msg += f"Ep Length: {batch_ep_len:.5g} Ep Return: {batch_ep_ret:.5g}"
+                if batch_ep_len is not None:
+                    log_msg += f"Ep Length: {batch_ep_len:.5g} Ep Return: {batch_ep_ret:.5g}"
 
-            logger.info(log_msg)
+                logger.info(log_msg)
 
             self.curr_train_batch_idx += 1
             count_batches += 1
@@ -347,6 +349,7 @@ def main():
     parser.add_argument("--env_name", type=str, default="PongNoFrameskip-v4")
     parser.add_argument("--device_token", default=None)
     parser.add_argument("--run_id", default=None)
+    parser.add_argument("--log_frequency", type=int, default=1)
     parser.add_argument("--partial_unroll", dest="partial_unroll", action="store_true")
     parser.add_argument("--no_partial_unroll", dest="partial_unroll", action="store_false")
     parser.add_argument("--undiscounted_log", dest="undiscounted_log", action="store_true")
@@ -450,7 +453,8 @@ def main():
     graceful_exiter = GracefulExit() if args.graceful_exit else None
     trainer = ActorCriticTrainer(args, model, model_id, trainer_id=1, writer=writer, optimizer=optimizer,
                                  num_mean_results=num_mean_results, target_mean_returns=target_mean_returns,
-                                 checkpoint_path=checkpoint_path, scheduler=scheduler, graceful_exiter=graceful_exiter, action_limits=limits)
+                                 checkpoint_path=checkpoint_path, scheduler=scheduler, graceful_exiter=graceful_exiter,
+                                 action_limits=limits)
     eval_policy = Policy(model, preprocessor, device, action_limits=limits)
     trainer.fit(dataset, env, eval_policy, num_epochs=num_epochs)
 
