@@ -31,21 +31,34 @@ class DummySummaryWriter(object):
         pass
 
 
-class ReturnScheduler(object):
+class ActorCriticReturnScheduler(object):
 
-    def __init__(self, optimizer, milestones, factor=0.1):
+    def __init__(self, optimizer, milestones, factor=0.1, critic_optimizer=None):
         self.optimizer = optimizer
+        self.critic_optimizer = critic_optimizer
         self.milestones = np.sort(milestones)
         self.begin_lr = self.get_lr()
+        self.begin_critic_lr = self.get_critic_lr()
         self.factor = factor
 
     def get_lr(self):
         for param_group in self.optimizer.param_groups:
             return param_group["lr"]
 
+    def get_critic_lr(self):
+        if self.critic_optimizer is None:
+            return None
+        for param_group in self.critic_optimizer.param_groups:
+            return param_group["lr"]
+
     def set_lr(self, new_lr):
         for g in self.optimizer.param_groups:
             g["lr"] = new_lr
+
+    def set_critic_lr(self, new_lr):
+        if self.critic_optimizer is not None:
+            for g in self.critic_optimizer.param_groups:
+                g["lr"] = new_lr
 
     def step(self, returns):
         idx = 0
@@ -56,8 +69,12 @@ class ReturnScheduler(object):
         if idx > 0:
             new_lr = self.begin_lr * self.factor ** idx
             self.set_lr(new_lr)
+            if self.critic_optimizer is not None:
+                new_critic_lr = self.begin_critic_lr * self.factor ** idx
+                self.set_critic_lr(new_critic_lr)
         else:
             self.set_lr(self.begin_lr)
+            self.set_critic_lr(self.begin_critic_lr)
 
 
 class ActorCriticTrainer(object):
@@ -100,8 +117,8 @@ class ActorCriticTrainer(object):
             if critic_optimizer is not None:
                 self.critic_optimizer = critic_optimizer
             else:
-                self.critic_optimizer = Adam(model.critic_parameters(), lr=self.lr,
-                                             weight_decay=config.l2_regularization, eps=config.eps)
+                self.critic_optimizer = Adam(model.critic_parameters(), lr=config.critic_lr,
+                                             weight_decay=config.critic_l2_regularization, eps=config.critic_eps)
 
         self.writer = writer if writer is not None else DummySummaryWriter()
 
@@ -111,7 +128,8 @@ class ActorCriticTrainer(object):
         if scheduler is not None:
             self.scheduler = scheduler
         elif config.scheduler_returns is not None:
-            self.scheduler = ReturnScheduler(optimizer, config.scheduler_returns, config.scheduler_factor)
+            self.scheduler = ActorCriticReturnScheduler(self.optimizer, config.scheduler_returns,
+                                                        config.scheduler_factor, critic_optimizer=self.critic_optimizer)
         else:
             self.scheduler = None
 
@@ -130,12 +148,15 @@ class ActorCriticTrainer(object):
     def scheduler_step(self, metrics=None):
         if self.scheduler is not None:
             current_lr = self.scheduler.get_lr()
+            current_critic_lr = self.scheduler.get_critic_lr()
 
             self.scheduler.step(metrics)
 
             log_prefix = "batch" if self.batch_wise_scheduler else "epoch"
             log_idx = self.curr_train_batch_idx if self.batch_wise_scheduler else self.curr_epoch_idx
             self.writer.add_scalar(f"{log_prefix}/{self.trainer_id}/lr", current_lr, log_idx)
+            if current_critic_lr is not None:
+                self.writer.add_scalar(f"{log_prefix}/{self.trainer_id}/critic_lr", current_critic_lr, log_idx)
 
     def save_checkpoint(self, filename=None, best=False):
         if self.checkpoint_path is None:
@@ -378,10 +399,13 @@ def main():
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--batch_size", type=int, default=128)
     parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--critic_lr", type=float, default=1e-3)
     parser.add_argument("--scheduler_returns", type=lambda s: [int(e) for e in s.split(",")])
     parser.add_argument("--scheduler_factor", type=float, default=0.1)
-    parser.add_argument("--eps", type=float, default=1e-3)
+    parser.add_argument("--eps", type=float, default=1e-8)
     parser.add_argument("--l2_regularization", type=float, default=0)
+    parser.add_argument("--critic_eps", type=float, default=1e-8)
+    parser.add_argument("--critic_l2_regularization", type=float, default=0)
     parser.add_argument("--epoch_length", type=int, default=2000)
     parser.add_argument("--n_eval_episodes", type=int, default=0)
     parser.add_argument("--n_epochs", type=int, default=-1)
@@ -419,19 +443,13 @@ def main():
     batch_size = args.batch_size
     atari = args.atari
     epoch_length = args.epoch_length
-    l2_regularization = args.l2_regularization
     target_mean_returns = args.target_mean_returns
-    scheduler_milestones = args.scheduler_returns
-    scheduler_factor = args.scheduler_factor
     partial_unroll = args.partial_unroll
-    lr = args.lr
-    eps = args.eps
     checkpoint_path = args.checkpoint_path
     num_epochs = args.n_epochs if args.n_epochs > 0 else None
     run_id = args.run_id if args.run_id is not None else f"run_{datetime.now():%d%m%Y_%H%M%S}"
     num_mean_results = args.n_mean_results
     pretrained_path = args.pretrained_path
-    save_optimizer = args.save_optimizer
 
     if args.device_token is None:
         device_token = "cuda" if torch.cuda.is_available() else "cpu"
