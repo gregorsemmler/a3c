@@ -52,6 +52,16 @@ class ActorCriticModel(nn.Module):
     def is_discrete(self) -> bool:
         raise NotImplementedError()
 
+    @property
+    def is_shared(self) -> bool:
+        raise NotImplementedError()
+
+    def actor_parameters(self):
+        raise NotImplementedError()
+
+    def critic_parameters(self):
+        raise NotImplementedError()
+
 
 class MLPModel(ActorCriticModel):
 
@@ -94,6 +104,19 @@ class MLPModel(ActorCriticModel):
     @property
     def is_discrete(self) -> bool:
         return self.discrete
+
+    @property
+    def is_shared(self) -> bool:
+        return False
+
+    def actor_parameters(self):
+        params = list(self.policy_shared.parameters()) + list(self.policy_mean.parameters())
+        if self.policy_log_std is not None:
+            params += list(self.policy_log_std.parameters())
+        return params
+
+    def critic_parameters(self):
+        return self.value.parameters()
 
     def forward(self, x):
         if self.discrete:
@@ -152,15 +175,22 @@ class SharedMLPModel(ActorCriticModel):
     def is_discrete(self) -> bool:
         return self.discrete
 
+    @property
+    def is_shared(self) -> bool:
+        return True
+
+    def actor_parameters(self):
+        return self.parameters()
+
+    def critic_parameters(self):
+        return self.parameters()
+
     def forward(self, x):
         shared_out = self.shared(x)
         p_shared_out = self.policy_shared(shared_out)
         if self.discrete:
             return self.policy_mean(p_shared_out), self.value(shared_out)
-        # TODO test
-        # log_std = torch.tanh(self.policy_log_std(p_shared_out))
-        # mean = torch.tanh(self.policy_mean(p_shared_out))
-        # return (mean, log_std), self.value(shared_out)
+
         return (self.policy_mean(p_shared_out), self.policy_log_std(p_shared_out)), self.value(shared_out)
 
 
@@ -213,6 +243,16 @@ class CNNModel(ActorCriticModel):
     @property
     def is_discrete(self) -> bool:
         return self.discrete
+
+    @property
+    def is_shared(self) -> bool:
+        return True
+
+    def actor_parameters(self):
+        return self.parameters()
+
+    def critic_parameters(self):
+        return self.parameters()
 
 
 class ResidualBlock(nn.Module):
@@ -299,6 +339,16 @@ class ResidualModel(ActorCriticModel):
     @property
     def is_discrete(self) -> bool:
         return self.discrete
+
+    @property
+    def is_shared(self) -> bool:
+        return True
+
+    def actor_parameters(self):
+        return self.parameters()
+
+    def critic_parameters(self):
+        return self.parameters()
 
     def forward(self, x):
         tower_out = self.residual_tower(x)

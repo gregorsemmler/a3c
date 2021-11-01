@@ -18,7 +18,7 @@ from torch.utils.tensorboard import SummaryWriter
 from atari_wrappers import make_atari, wrap_deepmind
 from data import EnvironmentsDataset, Policy
 from envs import SimpleCorridorEnv
-from model import SimpleCNNPreProcessor, CNNModel, NoopPreProcessor, SharedMLPModel
+from model import SimpleCNNPreProcessor, CNNModel, NoopPreProcessor, SharedMLPModel, ActorCriticModel, MLPModel
 from play import play_environment
 from utils import save_checkpoint, load_checkpoint, GracefulExit, get_action_space_details
 
@@ -62,9 +62,10 @@ class ReturnScheduler(object):
 
 class ActorCriticTrainer(object):
 
-    def __init__(self, config, model, model_id, trainer_id=None, optimizer=None, scheduler=None, checkpoint_path=None,
-                 save_optimizer=False, writer=None, batch_wise_scheduler=True, num_mean_results=100,
-                 target_mean_returns=None, graceful_exiter: GracefulExit = None, action_limits=None):
+    def __init__(self, config, model: ActorCriticModel, model_id, trainer_id=None, optimizer=None,
+                 critic_optimizer=None, scheduler=None, checkpoint_path=None, save_optimizer=False, writer=None,
+                 batch_wise_scheduler=True, num_mean_results=100, target_mean_returns=None,
+                 graceful_exiter: GracefulExit = None, action_limits=None):
         self.value_factor = config.value_factor
         self.policy_factor = config.policy_factor
         self.entropy_factor = config.entropy_factor
@@ -85,14 +86,35 @@ class ActorCriticTrainer(object):
 
         self.trainer_id = "" if trainer_id is None else str(trainer_id)
         self.model = model
+        self.shared = model.is_shared
         self.model_id = model_id
-        self.optimizer = optimizer if optimizer is not None else Adam(model.parameters(), lr=self.lr)
+
+        if self.shared:
+            self.optimizer = optimizer if optimizer is not None else Adam(model.parameters(), lr=self.lr,
+                                                                          weight_decay=config.l2_regularization,
+                                                                          eps=config.eps)
+        else:
+            self.optimizer = optimizer if optimizer is not None else Adam(model.actor_parameters(), lr=self.lr,
+                                                                          weight_decay=config.l2_regularization,
+                                                                          eps=config.eps)
+            if critic_optimizer is not None:
+                self.critic_optimizer = critic_optimizer
+            else:
+                self.critic_optimizer = Adam(model.critic_parameters(), lr=self.lr,
+                                             weight_decay=config.l2_regularization, eps=config.eps)
+
         self.writer = writer if writer is not None else DummySummaryWriter()
 
         self.discrete = self.model.is_discrete
         self.action_limits = action_limits
 
-        self.scheduler = scheduler
+        if scheduler is not None:
+            self.scheduler = scheduler
+        elif config.scheduler_returns is not None:
+            self.scheduler = ReturnScheduler(optimizer, config.scheduler_returns, config.scheduler_factor)
+        else:
+            self.scheduler = None
+
         self.checkpoint_path = checkpoint_path
         self.save_optimizer = save_optimizer
         self.curr_epoch_idx = 0
@@ -178,7 +200,7 @@ class ActorCriticTrainer(object):
                 play_environment(eval_env, eval_policy, num_episodes=self.num_eval_episodes, gamma=self.gamma)
 
             if not self.batch_wise_scheduler:
-                self.scheduler_step()
+                self.scheduler_step(self.get_mean_returns())
             self.curr_epoch_idx += 1
             self.save_checkpoint()
 
@@ -306,19 +328,45 @@ class ActorCriticTrainer(object):
 
         policy_loss, entropy_loss = self.calculate_policy_and_entropy_loss(actions, advantages_t, policy_out)
 
-        loss = entropy_loss + value_loss + policy_loss
+        if self.shared:
+            loss = entropy_loss + value_loss + policy_loss
 
-        self.optimizer.zero_grad()
-        loss.backward()
+            self.optimizer.zero_grad()
+            loss.backward()
 
-        if self.max_norm is not None:
-            nn.utils.clip_grad_norm_(self.model.parameters(), self.max_norm)
+            if self.max_norm is not None:
+                nn.utils.clip_grad_norm_(self.model.parameters(), self.max_norm)
 
-        self.optimizer.step()
-        if self.batch_wise_scheduler:
-            self.scheduler_step(self.get_mean_returns())
+            self.optimizer.step()
+            if self.batch_wise_scheduler:
+                self.scheduler_step(self.get_mean_returns())
+        else:
+            # Actor
+            actor_loss = policy_loss + entropy_loss
 
-        return loss.item(), policy_loss.item(), value_loss.item(), entropy_loss.item()
+            self.optimizer.zero_grad()
+            actor_loss.backward()
+
+            if self.max_norm is not None:
+                nn.utils.clip_grad_norm_(self.model.parameters(), self.max_norm)
+
+            self.optimizer.step()
+
+            # Critic
+            self.critic_optimizer.zero_grad()
+            value_loss.backward()
+
+            if self.max_norm is not None:
+                nn.utils.clip_grad_norm_(self.model.parameters(), self.max_norm)
+
+            self.critic_optimizer.step()
+            if self.batch_wise_scheduler:
+                self.scheduler_step(self.get_mean_returns())
+
+        p_loss, v_loss, e_loss = policy_loss.item(), value_loss.item(), entropy_loss.item()
+        total_loss = p_loss + v_loss + e_loss
+
+        return total_loss, p_loss, v_loss, e_loss
 
 
 def main():
@@ -356,9 +404,11 @@ def main():
     parser.add_argument("--no_undiscounted_log", dest="undiscounted_log", action="store_false")
     parser.add_argument("--atari", dest="atari", action="store_true")
     parser.add_argument("--no_atari", dest="atari", action="store_false")
+    parser.add_argument("--shared_model", dest="shared_model", action="store_true")
+    parser.add_argument("--no_shared_model", dest="shared_model", action="store_false")
     parser.add_argument("--graceful_exit", dest="graceful_exit", action="store_true")
     parser.add_argument("--no_graceful_exit", dest="graceful_exit", action="store_false")
-    parser.set_defaults(atari=True, partial_unroll=True, graceful_exit=True, undiscounted_log=True)
+    parser.set_defaults(atari=True, partial_unroll=True, graceful_exit=True, undiscounted_log=True, shared_model=False)
 
     args = parser.parse_args()
 
@@ -428,7 +478,10 @@ def main():
         state = env.reset()
         in_states = state.shape[0]
         discrete, action_dim, limits = get_action_space_details(env.action_space)
-        model = SharedMLPModel(in_states, action_dim, discrete=discrete).to(device)
+        if args.shared_model:
+            model = SharedMLPModel(in_states, action_dim, discrete=discrete).to(device)
+        else:
+            model = MLPModel(in_states, action_dim, discrete=discrete).to(device)
 
         preprocessor = NoopPreProcessor()
         environments = [gym.make(env_name) for _ in range(env_count)]
@@ -436,25 +489,15 @@ def main():
     dataset = EnvironmentsDataset(environments, model, n_steps, gamma, batch_size, preprocessor, device,
                                   epoch_length=epoch_length, partial_unroll=partial_unroll, action_limits=limits)
 
-    optimizer = Adam(model.parameters(), lr=lr, weight_decay=l2_regularization, eps=eps)
-
     if pretrained_path is not None:
-        if save_optimizer:
-            load_checkpoint(pretrained_path, model, optimizer=optimizer, device=device)
-        else:
-            load_checkpoint(pretrained_path, model, device=device)
+        load_checkpoint(pretrained_path, model, device=device)
         logger.info(f"Loaded model from '{pretrained_path}'")
 
-    if scheduler_milestones is not None:
-        scheduler = ReturnScheduler(optimizer, scheduler_milestones, scheduler_factor)
-    else:
-        scheduler = None
-
     graceful_exiter = GracefulExit() if args.graceful_exit else None
-    trainer = ActorCriticTrainer(args, model, model_id, trainer_id=1, writer=writer, optimizer=optimizer,
+    trainer_id = 1
+    trainer = ActorCriticTrainer(args, model, model_id, trainer_id=trainer_id, writer=writer,
                                  num_mean_results=num_mean_results, target_mean_returns=target_mean_returns,
-                                 checkpoint_path=checkpoint_path, scheduler=scheduler, graceful_exiter=graceful_exiter,
-                                 action_limits=limits)
+                                 checkpoint_path=checkpoint_path, graceful_exiter=graceful_exiter, action_limits=limits)
     eval_policy = Policy(model, preprocessor, device, action_limits=limits)
     trainer.fit(dataset, env, eval_policy, num_epochs=num_epochs)
 
