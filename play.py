@@ -12,8 +12,7 @@ from atari_wrappers import wrap_deepmind, make_atari
 from data import Policy, EpisodeResult
 from envs import SimpleCorridorEnv
 from model import SharedMLPModel, NoopPreProcessor, SimpleCNNPreProcessor, CNNModel
-from utils import load_checkpoint
-
+from common import load_checkpoint, get_environment, get_preprocessor, get_model
 
 logger = logging.getLogger(__name__)
 
@@ -72,16 +71,16 @@ def evaluate_model():
     parser.add_argument("--device_token", default=None)
     parser.add_argument("--n_episodes", type=int, default=10)
     parser.add_argument("--run_id", default=None)
-    parser.add_argument("--partial_unroll", dest="partial_unroll", action="store_true")
-    parser.add_argument("--no_partial_unroll", dest="partial_unroll", action="store_false")
     parser.add_argument("--atari", dest="atari", action="store_true")
     parser.add_argument("--no_atari", dest="atari", action="store_false")
-    parser.set_defaults(atari=True, partial_unroll=True)
-
+    parser.add_argument("--shared_model", dest="shared_model", action="store_true")
+    parser.add_argument("--no_shared_model", dest="shared_model", action="store_false")
+    parser.set_defaults(atari=True, shared_model=False)
     args = parser.parse_args()
 
     env_name = args.env_name
     atari = args.atari
+    shared_model = args.shared_model
     model_path = args.model_path
     gamma = args.gamma
     render = args.render
@@ -96,36 +95,9 @@ def evaluate_model():
 
     device = torch.device(device_token)
 
-    if env_name == "SimpleCorridor":
-        env = SimpleCorridorEnv()
-        state = env.reset()
-        in_states = state.shape[0]
-        num_actions = env.action_space.n
-        model = SharedMLPModel(in_states, num_actions).to(device)
-
-        preprocessor = NoopPreProcessor()
-        env = SimpleCorridorEnv()
-    elif atari:
-        env = wrap_deepmind(make_atari(env_name))
-        state = env.reset()
-
-        preprocessor = SimpleCNNPreProcessor()
-        in_t = preprocessor.preprocess(state)
-        n_actions = env.action_space.n
-        input_shape = tuple(in_t.shape)[1:]
-        model = CNNModel(input_shape, n_actions).to(device)
-
-        env = wrap_deepmind(make_atari(env_name))
-    else:
-        env = gym.make(env_name)
-        state = env.reset()
-        in_states = state.shape[0]
-        num_actions = env.action_space.n
-        # TODO adapt for continuous action spaces
-        model = SharedMLPModel(in_states, num_actions).to(device)
-
-        preprocessor = NoopPreProcessor()
-        env = gym.make(env_name)
+    model = get_model(env_name, shared_model, atari, device)
+    preprocessor = get_preprocessor(env_name, atari)
+    env = get_environment(env_name, atari)
 
     load_checkpoint(model_path, model, device=device)
 

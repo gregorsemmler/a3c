@@ -6,7 +6,6 @@ from datetime import datetime
 from os import makedirs
 from os.path import join
 
-import gym
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -16,12 +15,11 @@ from torch.optim import Adam
 import torch.multiprocessing as mp
 from torch.utils.tensorboard import SummaryWriter
 
-from atari_wrappers import make_atari, wrap_deepmind
 from data import EnvironmentsDataset, Policy
-from envs import SimpleCorridorEnv
-from model import SimpleCNNPreProcessor, CNNModel, NoopPreProcessor, SharedMLPModel, ActorCriticModel, MLPModel
+from model import ActorCriticModel
 from play import play_environment
-from utils import save_checkpoint, load_checkpoint, GracefulExit, get_action_space_details
+from common import save_checkpoint, load_checkpoint, GracefulExit, get_action_space_details, get_model, \
+    get_preprocessor, get_environment
 
 logger = logging.getLogger(__name__)
 
@@ -155,9 +153,9 @@ class ActorCriticTrainer(object):
 
             log_prefix = "batch" if self.batch_wise_scheduler else "epoch"
             log_idx = self.curr_train_batch_idx if self.batch_wise_scheduler else self.curr_epoch_idx
-            self.writer.add_scalar(f"{log_prefix}/{self.trainer_id}/lr", current_lr, log_idx)
+            self.writer.add_scalar(f"{log_prefix}/lr", current_lr, log_idx)
             if current_critic_lr is not None:
-                self.writer.add_scalar(f"{log_prefix}/{self.trainer_id}/critic_lr", current_critic_lr, log_idx)
+                self.writer.add_scalar(f"{log_prefix}/critic_lr", current_critic_lr, log_idx)
 
     def save_checkpoint(self, filename=None, best=False):
         if self.checkpoint_path is None:
@@ -243,19 +241,19 @@ class ActorCriticTrainer(object):
 
         for er_returns, batch in dataset.data():
             b_l, p_l, v_l, e_l = self.training_step(batch, self.curr_train_batch_idx)
-            self.writer.add_scalar(f"train_batch/{self.trainer_id}/loss", b_l, self.curr_train_batch_idx)
-            self.writer.add_scalar(f"train_batch/{self.trainer_id}/policy_loss", p_l, self.curr_train_batch_idx)
-            self.writer.add_scalar(f"train_batch/{self.trainer_id}/value_loss", v_l, self.curr_train_batch_idx)
-            self.writer.add_scalar(f"train_batch/{self.trainer_id}/entropy_loss", e_l, self.curr_train_batch_idx)
+            self.writer.add_scalar(f"train_batch/loss", b_l, self.curr_train_batch_idx)
+            self.writer.add_scalar(f"train_batch/policy_loss", p_l, self.curr_train_batch_idx)
+            self.writer.add_scalar(f"train_batch/value_loss", v_l, self.curr_train_batch_idx)
+            self.writer.add_scalar(f"train_batch/entropy_loss", e_l, self.curr_train_batch_idx)
 
             batch_ep_len = 0.0
             batch_ep_ret = 0.0
 
             for length, ret, ret_u in er_returns:
                 ep_ret = ret_u if self.undiscounted_log else ret
-                self.writer.add_scalar(f"train_batch/{self.trainer_id}/episode_length", length,
+                self.writer.add_scalar(f"train_batch/episode_length", length,
                                        self.curr_train_episode_idx)
-                self.writer.add_scalar(f"train_batch/{self.trainer_id}/episode_return", ep_ret,
+                self.writer.add_scalar(f"train_batch/episode_return", ep_ret,
                                        self.curr_train_episode_idx)
                 ep_episode_length += length
                 ep_episode_returns += ep_ret
@@ -302,11 +300,11 @@ class ActorCriticTrainer(object):
         ep_episode_length /= max(1.0, count_epoch_episodes)
         ep_episode_returns /= max(1.0, count_epoch_episodes)
 
-        self.writer.add_scalar(f"train_epoch/{self.trainer_id}loss", ep_l, self.curr_epoch_idx)
-        self.writer.add_scalar(f"train_epoch/{self.trainer_id}policy_loss", ep_p_l, self.curr_epoch_idx)
-        self.writer.add_scalar(f"train_epoch/{self.trainer_id}value_loss", ep_v_l, self.curr_epoch_idx)
-        self.writer.add_scalar(f"train_epoch/{self.trainer_id}episode_length", ep_episode_length, self.curr_epoch_idx)
-        self.writer.add_scalar(f"train_epoch/{self.trainer_id}episode_return", ep_episode_returns, self.curr_epoch_idx)
+        self.writer.add_scalar(f"train_epoch/loss", ep_l, self.curr_epoch_idx)
+        self.writer.add_scalar(f"train_epoch/policy_loss", ep_p_l, self.curr_epoch_idx)
+        self.writer.add_scalar(f"train_epoch/value_loss", ep_v_l, self.curr_epoch_idx)
+        self.writer.add_scalar(f"train_epoch/episode_length", ep_episode_length, self.curr_epoch_idx)
+        self.writer.add_scalar(f"train_epoch/episode_return", ep_episode_returns, self.curr_epoch_idx)
         logger.info(f"{self.trainer_id}# Epoch {self.curr_epoch_idx}: Loss: {ep_l:.6g} "
                     f"Policy Loss: {ep_p_l:.6g} Value Loss: {ep_v_l:.6g} Entropy Loss: {ep_e_l:.6g} "
                     f"Episode Length: {ep_episode_length:.6g} Episode Return: {ep_episode_returns:.6g}")
@@ -404,9 +402,9 @@ def main():
     parser.add_argument("--critic_lr", type=float, default=1e-3)
     parser.add_argument("--scheduler_returns", type=lambda s: [int(e) for e in s.split(",")])
     parser.add_argument("--scheduler_factor", type=float, default=0.1)
-    parser.add_argument("--eps", type=float, default=1e-8)
+    parser.add_argument("--eps", type=float, default=1e-3)
     parser.add_argument("--l2_regularization", type=float, default=0)
-    parser.add_argument("--critic_eps", type=float, default=1e-8)
+    parser.add_argument("--critic_eps", type=float, default=1e-3)
     parser.add_argument("--critic_l2_regularization", type=float, default=0)
     parser.add_argument("--epoch_length", type=int, default=2000)
     parser.add_argument("--n_eval_episodes", type=int, default=0)
@@ -433,16 +431,18 @@ def main():
     parser.add_argument("--no_atari", dest="atari", action="store_false")
     parser.add_argument("--shared_model", dest="shared_model", action="store_true")
     parser.add_argument("--no_shared_model", dest="shared_model", action="store_false")
+    parser.add_argument("--tensorboardlog", dest="tensorboardlog", action="store_true")
+    parser.add_argument("--no_tensorboardlog", dest="tensorboardlog", action="store_false")
     parser.add_argument("--graceful_exit", dest="graceful_exit", action="store_true")
     parser.add_argument("--no_graceful_exit", dest="graceful_exit", action="store_false")
-    parser.set_defaults(atari=True, partial_unroll=True, graceful_exit=True, undiscounted_log=True, shared_model=False)
+    parser.set_defaults(atari=True, partial_unroll=True, graceful_exit=True, undiscounted_log=True, shared_model=False,
+                        tensorboardlog=False)
 
     args = parser.parse_args()
 
     env_name = args.env_name
     atari = args.atari
     checkpoint_path = args.checkpoint_path
-    run_id = args.run_id if args.run_id is not None else f"run_{datetime.now():%d%m%Y_%H%M%S}"
     shared_model = args.shared_model
     pretrained_path = args.pretrained_path
 
@@ -472,10 +472,8 @@ def main():
     mp.set_start_method("spawn")
 
     processes = []
-    # writer = SummaryWriter(comment=f"-{run_id}")
     for trainer_id in range(args.n_processes):
-        # p = mp.Process(target=training, args=(args, model, trainer_id, writer, device))
-        p = mp.Process(target=training, args=(args, model, trainer_id, DummySummaryWriter(), device))
+        p = mp.Process(target=training, args=(args, model, trainer_id, device))
 
         p.start()
         processes.append(p)
@@ -486,49 +484,7 @@ def main():
     print("")
 
 
-def get_model(env_name, shared_model, atari, device):
-    if env_name == "SimpleCorridor":
-        eval_env = SimpleCorridorEnv()
-        state = eval_env.reset()
-        in_states = state.shape[0]
-        discrete, action_dim, limits = get_action_space_details(eval_env.action_space)
-        return SharedMLPModel(in_states, action_dim, discrete=discrete).to(device)
-    elif atari:
-        eval_env = wrap_deepmind(make_atari(env_name))
-        state = eval_env.reset()
-
-        preprocessor = SimpleCNNPreProcessor()
-        in_t = preprocessor.preprocess(state)
-        discrete, action_dim, limits = get_action_space_details(eval_env.action_space)
-        input_shape = tuple(in_t.shape)[1:]
-        return CNNModel(input_shape, action_dim, discrete=discrete).to(device)
-
-    eval_env = gym.make(env_name)
-    state = eval_env.reset()
-    in_states = state.shape[0]
-    discrete, action_dim, limits = get_action_space_details(eval_env.action_space)
-    if shared_model:
-        return SharedMLPModel(in_states, action_dim, discrete=discrete).to(device)
-    return MLPModel(in_states, action_dim, discrete=discrete).to(device)
-
-
-def get_preprocessor(env_name, atari):
-    if env_name == "SimpleCorridor":
-        return NoopPreProcessor()
-    elif atari:
-        return SimpleCNNPreProcessor()
-    return NoopPreProcessor()
-
-
-def get_environment(env_name, atari):
-    if env_name == "SimpleCorridor":
-        return SimpleCorridorEnv()
-    elif atari:
-        return wrap_deepmind(make_atari(env_name))
-    return gym.make(env_name)
-
-
-def training(args, model, trainer_id, writer, device):
+def training(args, model, trainer_id, device):
     logging.basicConfig(level=logging.INFO)
     env_name = args.env_name
     env_count = args.n_envs
@@ -543,6 +499,7 @@ def training(args, model, trainer_id, writer, device):
     num_epochs = args.n_epochs if args.n_epochs > 0 else None
     num_mean_results = args.n_mean_results
     run_id = args.run_id if args.run_id is not None else f"run_{datetime.now():%d%m%Y_%H%M%S}"
+    run_id = f"{run_id}_{trainer_id}"
     model_id = f"{run_id}" if args.model_id is None else args.model_id
 
     preprocessor = get_preprocessor(env_name, atari)
@@ -550,6 +507,7 @@ def training(args, model, trainer_id, writer, device):
 
     eval_env = get_environment(env_name, atari)
     _, _, limits = get_action_space_details(eval_env.action_space)
+    writer = SummaryWriter(comment=f"-{run_id}") if args.tensorboardlog else DummySummaryWriter()
 
     dataset = EnvironmentsDataset(environments, model, n_steps, gamma, batch_size, preprocessor, device,
                                   epoch_length=epoch_length, partial_unroll=partial_unroll, action_limits=limits)
