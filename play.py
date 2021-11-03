@@ -4,15 +4,11 @@ import os
 from datetime import datetime
 from os.path import join
 
-import gym
-from gym.wrappers import Monitor
 import torch
+from gym.wrappers import Monitor
 
-from atari_wrappers import wrap_deepmind, make_atari
-from data import Policy, EpisodeResult
-from envs import SimpleCorridorEnv
-from model import SharedMLPModel, NoopPreProcessor, SimpleCNNPreProcessor, CNNModel
 from common import load_checkpoint, get_environment, get_preprocessor, get_model
+from data import Policy, EpisodeResult
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +71,9 @@ def evaluate_model():
     parser.add_argument("--no_atari", dest="atari", action="store_false")
     parser.add_argument("--shared_model", dest="shared_model", action="store_true")
     parser.add_argument("--no_shared_model", dest="shared_model", action="store_false")
-    parser.set_defaults(atari=True, shared_model=False)
+    parser.add_argument("--fixed_std", dest="fixed_std", action="store_true")
+    parser.add_argument("--no_fixed_std", dest="fixed_std", action="store_false")
+    parser.set_defaults(atari=True, shared_model=False, fixed_std=False)
     args = parser.parse_args()
 
     env_name = args.env_name
@@ -95,7 +93,7 @@ def evaluate_model():
 
     device = torch.device(device_token)
 
-    model = get_model(env_name, shared_model, atari, device)
+    model = get_model(env_name, shared_model, atari, device, fixed_std=args.fixed_std)
     preprocessor = get_preprocessor(env_name, atari)
     env = get_environment(env_name, atari)
 

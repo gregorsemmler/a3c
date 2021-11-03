@@ -52,13 +52,15 @@ def get_action_space_details(action_space):
     return discrete, action_dim, limits
 
 
-def get_model(env_name, shared_model, atari, device):
+def get_model(env_name, shared_model, atari, device, fixed_std=True):
     if env_name == "SimpleCorridor":
         eval_env = SimpleCorridorEnv()
         state = eval_env.reset()
         in_states = state.shape[0]
         discrete, action_dim, limits = get_action_space_details(eval_env.action_space)
-        return SharedMLPModel(in_states, action_dim, discrete=discrete).to(device)
+        if shared_model:
+            return SharedMLPModel(in_states, action_dim, fixed_std=fixed_std, discrete=discrete).to(device)
+        return MLPModel(in_states, action_dim, fixed_std=fixed_std, discrete=discrete).to(device)
     elif atari:
         eval_env = wrap_deepmind(make_atari(env_name))
         state = eval_env.reset()
@@ -67,15 +69,15 @@ def get_model(env_name, shared_model, atari, device):
         in_t = preprocessor.preprocess(state)
         discrete, action_dim, limits = get_action_space_details(eval_env.action_space)
         input_shape = tuple(in_t.shape)[1:]
-        return CNNModel(input_shape, action_dim, discrete=discrete).to(device)
+        return CNNModel(input_shape, action_dim, discrete=discrete, fixed_std=fixed_std).to(device)
 
     eval_env = gym.make(env_name)
     state = eval_env.reset()
     in_states = state.shape[0]
     discrete, action_dim, limits = get_action_space_details(eval_env.action_space)
     if shared_model:
-        return SharedMLPModel(in_states, action_dim, discrete=discrete).to(device)
-    return MLPModel(in_states, action_dim, discrete=discrete).to(device)
+        return SharedMLPModel(in_states, action_dim, fixed_std=fixed_std, discrete=discrete).to(device)
+    return MLPModel(in_states, action_dim, fixed_std=fixed_std, discrete=discrete).to(device)
 
 
 def get_preprocessor(env_name, atari):

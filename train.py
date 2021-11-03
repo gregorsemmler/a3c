@@ -431,12 +431,14 @@ def main():
     parser.add_argument("--no_atari", dest="atari", action="store_false")
     parser.add_argument("--shared_model", dest="shared_model", action="store_true")
     parser.add_argument("--no_shared_model", dest="shared_model", action="store_false")
+    parser.add_argument("--fixed_std", dest="fixed_std", action="store_true")
+    parser.add_argument("--no_fixed_std", dest="fixed_std", action="store_false")
     parser.add_argument("--tensorboardlog", dest="tensorboardlog", action="store_true")
     parser.add_argument("--no_tensorboardlog", dest="tensorboardlog", action="store_false")
     parser.add_argument("--graceful_exit", dest="graceful_exit", action="store_true")
     parser.add_argument("--no_graceful_exit", dest="graceful_exit", action="store_false")
     parser.set_defaults(atari=True, partial_unroll=True, graceful_exit=True, undiscounted_log=True, shared_model=False,
-                        tensorboardlog=False)
+                        tensorboardlog=False, fixed_std=True)
 
     args = parser.parse_args()
 
@@ -463,7 +465,7 @@ def main():
         env_spec = envs.registry.env_specs[env_name]
         goal_return = env_spec.reward_threshold
 
-    model = get_model(env_name, shared_model, atari, device)
+    model = get_model(env_name, shared_model, atari, device, fixed_std=args.fixed_std)
 
     if pretrained_path is not None:
         load_checkpoint(pretrained_path, model, device=device)

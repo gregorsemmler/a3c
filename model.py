@@ -65,12 +65,14 @@ class ActorCriticModel(nn.Module):
 
 class MLPModel(ActorCriticModel):
 
-    def __init__(self, input_size, action_dimension, discrete=True, fully_params=(64, 64), activation="relu"):
+    def __init__(self, input_size, action_dimension, discrete=True, fully_params=(64, 64), activation="relu",
+                 fixed_std=False):
         super().__init__()
         self.action_dim = action_dimension
         self.input_size = input_size
         self.activation = activation
         self.discrete = discrete
+        self.fixed_std = fixed_std
 
         policy_layers = []
         value_layers = []
@@ -87,7 +89,13 @@ class MLPModel(ActorCriticModel):
 
         self.policy_shared = nn.Sequential(*policy_layers)
         self.policy_mean = nn.Linear(prev_full_n, action_dimension)
-        self.policy_log_std = nn.Linear(prev_full_n, action_dimension) if not self.discrete else None
+        if not self.discrete:
+            if not self.fixed_std:
+                self.policy_log_std = nn.Linear(prev_full_n, action_dimension)
+            else:
+                self.policy_log_std = nn.Parameter(torch.zeros(action_dimension))
+        else:
+            self.policy_log_std = None
         self.value = nn.Sequential(*value_layers)
 
     def get_activation(self):
@@ -111,8 +119,10 @@ class MLPModel(ActorCriticModel):
 
     def actor_parameters(self):
         params = list(self.policy_shared.parameters()) + list(self.policy_mean.parameters())
-        if self.policy_log_std is not None:
+        if isinstance(self.policy_log_std, nn.Module):
             params += list(self.policy_log_std.parameters())
+        elif isinstance(self.policy_log_std, nn.Parameter):
+            params += [self.policy_log_std]
         return params
 
     def critic_parameters(self):
@@ -122,18 +132,21 @@ class MLPModel(ActorCriticModel):
         if self.discrete:
             return self.policy_mean(self.policy_shared(x)), self.value(x)
         p_shared_out = self.policy_shared(x)
-        return (self.policy_mean(p_shared_out), self.policy_log_std(p_shared_out)), self.value(x)
+        if not self.fixed_std:
+            return (self.policy_mean(p_shared_out), self.policy_log_std(p_shared_out)), self.value(x)
+        return (self.policy_mean(p_shared_out), self.policy_log_std), self.value(x)
 
 
 class SharedMLPModel(ActorCriticModel):
 
     def __init__(self, input_size, action_dimension, discrete=True, shared_params=(64, 64), head_params=(32,),
-                 activation="elu"):
+                 activation="elu", fixed_std=False):
         super().__init__()
         self.action_dim = action_dimension
         self.input_size = input_size
         self.activation = activation
         self.discrete = discrete
+        self.fixed_std = fixed_std
 
         shared_layers = []
         policy_layers = []
@@ -157,7 +170,13 @@ class SharedMLPModel(ActorCriticModel):
         self.shared = nn.Sequential(*shared_layers)
         self.policy_shared = nn.Sequential(*policy_layers)
         self.policy_mean = nn.Linear(prev_full_n, action_dimension)
-        self.policy_log_std = nn.Linear(prev_full_n, action_dimension) if not self.discrete else None
+        if not self.discrete:
+            if not self.fixed_std:
+                self.policy_log_std = nn.Linear(prev_full_n, action_dimension)
+            else:
+                self.policy_log_std = nn.Parameter(torch.zeros(action_dimension))
+        else:
+            self.policy_log_std = None
         self.value = nn.Sequential(*value_layers)
 
     def get_activation(self):
@@ -191,17 +210,20 @@ class SharedMLPModel(ActorCriticModel):
         if self.discrete:
             return self.policy_mean(p_shared_out), self.value(shared_out)
 
-        return (self.policy_mean(p_shared_out), self.policy_log_std(p_shared_out)), self.value(shared_out)
+        if not self.fixed_std:
+            return (self.policy_mean(p_shared_out), self.policy_log_std(p_shared_out)), self.value(x)
+        return (self.policy_mean(p_shared_out), self.policy_log_std), self.value(shared_out)
 
 
 class CNNModel(ActorCriticModel):
 
     def __init__(self, input_shape, action_dimension, discrete=True, conv_params=((16, 8, 4, 0), (32, 4, 2, 0)),
-                 fully_params=(256,)):
+                 fully_params=(256,), fixed_std=False):
         super().__init__()
         self.input_shapes = input_shape
         self.action_dim = action_dimension
         self.discrete = discrete
+        self.fixed_std = fixed_std
 
         prev_n_filters = self.input_shapes[0]
         conv_layers = []
@@ -226,15 +248,23 @@ class CNNModel(ActorCriticModel):
 
         self.policy_shared = nn.Sequential(*policy_head_layers)
         self.policy_mean = nn.Linear(prev_full_n, action_dimension)
-        self.policy_log_std = nn.Linear(prev_full_n, action_dimension) if not self.discrete else None
+        if not self.discrete:
+            if not self.fixed_std:
+                self.policy_log_std = nn.Linear(prev_full_n, action_dimension)
+            else:
+                self.policy_log_std = nn.Parameter(torch.zeros(action_dimension))
+        else:
+            self.policy_log_std = None
         self.value_head = nn.Sequential(*value_layers)
 
     def forward(self, x):
         conv_out = self.conv(x)
-        policy_shared_out = self.policy_shared(conv_out)
+        p_shared_out = self.policy_shared(conv_out)
         if self.discrete:
-            return self.policy_mean(policy_shared_out), self.value_head(conv_out)
-        return (self.policy_mean(policy_shared_out), self.policy_log_std(policy_shared_out)), self.value_head(conv_out)
+            return self.policy_mean(p_shared_out), self.value_head(conv_out)
+        if not self.fixed_std:
+            return (self.policy_mean(p_shared_out), self.policy_log_std(p_shared_out)), self.value_head(conv_out)
+        return (self.policy_mean(p_shared_out), self.policy_log_std), self.value_head(conv_out)
 
     @property
     def action_dimension(self) -> int:
@@ -288,7 +318,8 @@ class ResidualBlock(nn.Module):
 
 class ResidualModel(ActorCriticModel):
 
-    def __init__(self, input_shape, num_filters, num_residual_blocks, val_hidden_size, action_dimension, discrete=True):
+    def __init__(self, input_shape, num_filters, num_residual_blocks, val_hidden_size, action_dimension, discrete=True,
+                 fixed_std=False):
         super().__init__()
         self.input_shape = input_shape
         self.num_filters = num_filters
@@ -296,6 +327,8 @@ class ResidualModel(ActorCriticModel):
         self.val_hidden_size = val_hidden_size
         self.action_dim = action_dimension
         self.discrete = discrete
+        self.fixed_std = fixed_std
+
         self.residual_tower = nn.Sequential(
             nn.Conv2d(self.input_shape[0], self.num_filters, kernel_size=3, stride=1, padding=1),
             nn.BatchNorm2d(self.num_filters),
@@ -316,7 +349,13 @@ class ResidualModel(ActorCriticModel):
             nn.Flatten(),
         )
         self.policy_mean = nn.Linear(poly_conv_flat, self.action_dim)
-        self.policy_log_std = nn.Linear(poly_conv_flat, self.action_dim) if not self.discrete else None
+        if not self.discrete:
+            if not self.fixed_std:
+                self.policy_log_std = nn.Linear(poly_conv_flat, self.action_dim)
+            else:
+                self.policy_log_std = nn.Parameter(torch.zeros(self.action_dim))
+        else:
+            self.policy_log_std = None
 
         self.val_conv = nn.Sequential(
             nn.Conv2d(self.num_filters, 1, kernel_size=1, stride=1),
@@ -355,4 +394,6 @@ class ResidualModel(ActorCriticModel):
         p_shared_out = self.policy_shared(tower_out)
         if self.discrete:
             return self.policy_mean(p_shared_out), self.val_head(tower_out)
-        return (self.policy_mean(p_shared_out), self.policy_log_std(p_shared_out)), self.val_head(tower_out)
+        if not self.fixed_std:
+            return (self.policy_mean(p_shared_out), self.policy_log_std(p_shared_out)), self.val_head(tower_out)
+        return (self.policy_mean(p_shared_out), self.policy_log_std), self.val_head(tower_out)
