@@ -9,7 +9,6 @@ from os.path import join
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from gym import envs
 import numpy as np
 from torch.optim import Adam
 import torch.multiprocessing as mp
@@ -460,11 +459,6 @@ def main():
         makedirs(checkpoint_path, exist_ok=True)
         makedirs(best_models_path, exist_ok=True)
 
-    env_names = sorted(envs.registry.env_specs.keys())
-    if env_name in envs.registry.env_specs:
-        env_spec = envs.registry.env_specs[env_name]
-        goal_return = env_spec.reward_threshold
-
     model = get_model(env_name, shared_model, atari, device, fixed_std=args.fixed_std)
 
     if pretrained_path is not None:
@@ -482,8 +476,6 @@ def main():
 
     for p in processes:
         p.join()
-
-    print("")
 
 
 def training(args, model, trainer_id, device):
