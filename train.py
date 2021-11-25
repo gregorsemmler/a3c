@@ -320,7 +320,7 @@ class ActorCriticTrainer(object):
 
         mean, log_std = policy_out
 
-        if self.action_limits:
+        if self.action_limits is not None:
             low, high = self.action_limits
             mean = torch.clamp(mean, low, high)
             log_std = torch.clamp(log_std, math.log(1e-5), 2 * math.log(high - low))

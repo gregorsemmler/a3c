@@ -23,7 +23,7 @@ def categorical_action_selector(policy_out, action_limits=None):
 def normal_action_selector(policy_out, action_limits=None):
     mean, log_std = policy_out
 
-    if action_limits is None:
+    if action_limits is not None:
         low, high = action_limits
         mean = torch.clamp(mean, low, high)
         log_std = torch.clamp(log_std, math.log(1e-5), 2 * math.log(high - low))
